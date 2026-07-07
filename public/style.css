@@ -237,7 +237,6 @@ body.light-theme .crt-glow {
   align-items: center;
   gap: 8px;
   transition: all 0.2s ease;
-  outline: none;
   width: 145px;
 }
 
@@ -255,7 +254,6 @@ body.light-theme .crt-glow {
   align-items: center;
   gap: 8px;
   transition: all 0.2s ease;
-  outline: none;
   width: 155px;
 }
 
@@ -273,7 +271,6 @@ body.light-theme .crt-glow {
   align-items: center;
   gap: 8px;
   transition: all 0.2s ease;
-  outline: none;
   width: 125px;
 }
 
@@ -441,7 +438,6 @@ body.light-theme .telemetry-label {
   font-family: var(--font-retro);
   font-size: 8px;
   padding: 4px;
-  outline: none;
   cursor: pointer;
 }
 
@@ -816,3 +812,4 @@ body.light-theme #cloudy-overlay {
   text-transform: uppercase;
   letter-spacing: 1px;
 }
+.neon-btn:focus-visible, .dev-row select:focus-visible, .dev-toggle:focus-visible { outline: 2px solid var(--neon-cyan); outline-offset: 2px; }
