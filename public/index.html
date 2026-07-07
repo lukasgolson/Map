@@ -66,6 +66,10 @@
         <span id="telemetry-time" class="telemetry-value">12:00 PM</span>
       </div>
       <div class="telemetry-row">
+        <span class="telemetry-label">LAST UPDATE</span>
+        <span id="telemetry-last-update" class="telemetry-value">N/A</span>
+      </div>
+      <div class="telemetry-row">
         <span class="telemetry-label">TODAY DIST</span>
         <span id="telemetry-dist" class="telemetry-value">0.00 km</span>
       </div>
@@ -87,6 +91,12 @@
     <button id="music-toggle" class="neon-btn mute" aria-label="Toggle Music">
       <span class="music-icon">🎵</span>
       <span id="music-label">MUSIC: OFF</span>
+    </button>
+
+    <!-- Follow Dino Button -->
+    <button id="follow-toggle" class="neon-btn play" aria-label="Toggle Follow Dino">
+      <span class="follow-icon">🦖</span>
+      <span id="follow-label">FOLLOW: ON</span>
     </button>
 
     <!-- SFX Toggle Button -->
@@ -130,6 +140,27 @@
           <option value="snowy">Snowy</option>
         </select>
       </div>
+      <div class="dev-row">
+        <label for="dev-feed">FEED:</label>
+        <select id="dev-feed">
+          <option value="live">Live (Garmin)</option>
+          <option value="test">Test Server</option>
+        </select>
+      </div>
+      <div class="dev-row">
+        <label for="dev-period">PERIOD:</label>
+        <select id="dev-period">
+          <option value="5">5s</option>
+          <option value="10">10s</option>
+          <option value="30">30s</option>
+          <option value="60">1m</option>
+          <option value="300">5m</option>
+          <option value="600">10m</option>
+        </select>
+      </div>
+      <div class="dev-row" id="dev-reset-route-row" style="display: none; margin-top: 2px;">
+        <button id="dev-reset-route" class="neon-btn dev-reset-btn" style="border-color: var(--neon-cyan); color: var(--neon-cyan); box-shadow: 0 0 8px var(--neon-cyan); text-shadow: 0 0 4px var(--neon-cyan);">NEW TEST ROUTE</button>
+      </div>
       <div class="dev-row" style="font-family: var(--font-retro); font-size: 8px; justify-content: space-between; display: flex; align-items: center; color: #888; margin-top: 4px;">
         <span>ZOOM LEVEL:</span>
         <span id="dev-zoom-val" style="font-weight: bold; color: #d300ff;">13</span>
@@ -159,11 +190,15 @@
   <!-- Retro Splash Screen (Bypasses Autoplay Restrictions on Click) -->
   <div id="splash-screen" class="splash-screen">
     <div class="splash-content">
-      <h1 class="splash-title">DINO-TRANSIT</h1>
-      <p class="splash-subtitle">8-BIT DIGITAL TERRARIUM</p>
+      <h1 id="splash-title" class="splash-title">DINO-TRANSIT</h1>
+      <p id="splash-subtitle" class="splash-subtitle">MAP</p>
       <div class="splash-btn-pulse">PRESS START</div>
+      <div class="splash-credit">Interactive Map by L. G. Olson</div>
     </div>
   </div>
+
+  <!-- Centered Bottom credit overlay for the main map dashboard -->
+  <div class="bottom-credit">Interactive Map by L. G. Olson</div>
 
   <!-- Frontend Javascript -->
   <script src="app.js"></script>

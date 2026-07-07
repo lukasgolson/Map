@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
@@ -13,13 +14,17 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	_ "modernc.org/sqlite"
 )
 
 var (
-	config         Config
-	store          Store
-	storeMutex     sync.RWMutex
-	currentWeather string = "clear"
+	config           Config
+	store            Store
+	storeMutex       sync.RWMutex
+	currentWeather   string = "clear"
+	pollIntervalChan        = make(chan time.Duration, 10)
+	db               *sql.DB
 )
 
 func main() {
@@ -40,11 +45,15 @@ func main() {
 	}
 
 	// 3. Start background pollers
+	InitTestRoute()
 	go startGarminPoller()
 	go startWeatherPoller()
 
 	// 4. Start HTTP Server
 	http.HandleFunc("/api/v1/dashboard", handleDashboardAPI)
+	http.HandleFunc("/api/v1/settings", handleSettings)
+	http.HandleFunc("/api/v1/test-kml", handleTestKML)
+	http.HandleFunc("/api/v1/test/reset", handleTestReset)
 
 	// Serve static files from public directory
 	publicDir := filepath.Join(".", "public")
@@ -67,28 +76,192 @@ func loadConfig() error {
 	return decoder.Decode(&config)
 }
 
-// loadStore reads the data.json flat-file storage
-func loadStore() error {
-	file, err := os.Open(config.DataFilePath)
-	if err != nil {
-		return err
+// initDB initializes the SQLite database and migrates data if necessary
+func initDB() error {
+	dbPath := config.DataFilePath
+	if strings.HasSuffix(strings.ToLower(dbPath), ".json") {
+		dbPath = strings.TrimSuffix(dbPath, filepath.Ext(dbPath)) + ".db"
+		config.DataFilePath = dbPath
+		_ = saveConfig()
 	}
-	defer file.Close()
-	decoder := json.NewDecoder(file)
-	storeMutex.Lock()
-	defer storeMutex.Unlock()
-	return decoder.Decode(&store)
+
+	var err error
+	db, err = sql.Open("sqlite", dbPath)
+	if err != nil {
+		return fmt.Errorf("failed to open sqlite database: %w", err)
+	}
+
+	// Create tables
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS history (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			lng REAL,
+			lat REAL,
+			timestamp TEXT,
+			velocity REAL,
+			battery INTEGER,
+			weather TEXT
+		);
+		CREATE TABLE IF NOT EXISTS metadata (
+			key TEXT PRIMARY KEY,
+			value TEXT
+		);
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to create database tables: %w", err)
+	}
+
+	// Migrate from data.json if it exists
+	if err := migrateFromJSON(); err != nil {
+		fmt.Printf("Warning: legacy data.json migration failed: %v\n", err)
+	}
+
+	return nil
 }
 
-// saveStore writes data to data.json
-func saveStore() error {
-	storeMutex.RLock()
-	data, err := json.MarshalIndent(store, "", "  ")
-	storeMutex.RUnlock()
+// migrateFromJSON imports history and metadata from data.json to SQLite
+func migrateFromJSON() error {
+	jsonPath := "data.json"
+	if _, err := os.Stat(jsonPath); os.IsNotExist(err) {
+		return nil
+	}
+
+	fmt.Println("Migrating legacy data.json flat file to SQLite...")
+
+	file, err := os.Open(jsonPath)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(config.DataFilePath, data, 0644)
+
+	var legacyStore Store
+	if err := json.NewDecoder(file).Decode(&legacyStore); err != nil {
+		file.Close()
+		return fmt.Errorf("failed to parse data.json: %w", err)
+	}
+	file.Close()
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Insert history points
+	stmt, err := tx.Prepare("INSERT INTO history (lng, lat, timestamp, velocity, battery, weather) VALUES (?, ?, ?, ?, ?, ?)")
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, pt := range legacyStore.History {
+		_, err = stmt.Exec(pt.Lng, pt.Lat, pt.Timestamp.Format(time.RFC3339), pt.Velocity, pt.Battery, pt.Weather)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Insert metadata
+	metaStmt, err := tx.Prepare("INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)")
+	if err != nil {
+		return err
+	}
+	defer metaStmt.Close()
+
+	_, err = metaStmt.Exec("high_score", strconv.Itoa(legacyStore.HighScore))
+	if err != nil {
+		return err
+	}
+
+	if !legacyStore.LastMove.IsZero() {
+		_, err = metaStmt.Exec("last_move", legacyStore.LastMove.Format(time.RFC3339))
+		if err != nil {
+			return err
+		}
+	}
+
+	if !legacyStore.LastPoint.Timestamp.IsZero() {
+		lastPointBytes, err := json.Marshal(legacyStore.LastPoint)
+		if err == nil {
+			_, err = metaStmt.Exec("last_point", string(lastPointBytes))
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	// Rename file to prevent re-migration
+	backupPath := "data.json.bak"
+	if err := os.Rename(jsonPath, backupPath); err != nil {
+		fmt.Printf("Warning: failed to rename data.json: %v\n", err)
+	} else {
+		fmt.Println("Migration complete! Legacy data.json renamed to data.json.bak")
+	}
+
+	return nil
+}
+
+// loadStore initializes the SQLite database and reads the persisted state
+func loadStore() error {
+	if err := initDB(); err != nil {
+		return err
+	}
+
+	storeMutex.Lock()
+	defer storeMutex.Unlock()
+
+	// Query history coordinates
+	rows, err := db.Query("SELECT lng, lat, timestamp, velocity, battery, weather FROM history ORDER BY id ASC")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	store.History = make([]Coordinate, 0)
+	for rows.Next() {
+		var pt Coordinate
+		var tsStr string
+		err := rows.Scan(&pt.Lng, &pt.Lat, &tsStr, &pt.Velocity, &pt.Battery, &pt.Weather)
+		if err != nil {
+			return err
+		}
+		pt.Timestamp, _ = time.Parse(time.RFC3339, tsStr)
+		store.History = append(store.History, pt)
+	}
+
+	// Query metadata
+	rowsMeta, err := db.Query("SELECT key, value FROM metadata")
+	if err != nil {
+		return err
+	}
+	defer rowsMeta.Close()
+
+	for rowsMeta.Next() {
+		var key, val string
+		if err := rowsMeta.Scan(&key, &val); err != nil {
+			return err
+		}
+		switch key {
+		case "high_score":
+			store.HighScore, _ = strconv.Atoi(val)
+		case "last_move":
+			store.LastMove, _ = time.Parse(time.RFC3339, val)
+		case "last_point":
+			_ = json.Unmarshal([]byte(val), &store.LastPoint)
+		}
+	}
+
+	return nil
+}
+
+// saveStore locks and writes all data to SQLite
+func saveStore() error {
+	storeMutex.RLock()
+	defer storeMutex.RUnlock()
+	return saveStoreLocked()
 }
 
 // handleDashboardAPI serves /api/v1/dashboard
@@ -229,26 +402,54 @@ type DataField struct {
 
 // startGarminPoller polls the Garmin feed periodically
 func startGarminPoller() {
-	// Poll immediately on startup
-	pollGarmin()
-
-	ticker := time.NewTicker(time.Duration(config.GarminPollIntervalMinutes) * time.Minute)
-	for range ticker.C {
+	// Delay the initial poll slightly to let the HTTP server start up and bind
+	go func() {
+		time.Sleep(1 * time.Second)
 		pollGarmin()
+	}()
+
+	var interval time.Duration
+	if config.PollIntervalSeconds > 0 {
+		interval = time.Duration(config.PollIntervalSeconds) * time.Second
+	} else {
+		interval = time.Duration(config.GarminPollIntervalMinutes) * time.Minute
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			pollGarmin()
+		case newInterval := <-pollIntervalChan:
+			ticker.Reset(newInterval)
+			fmt.Printf("Garmin poller interval updated to %v\n", newInterval)
+		}
 	}
 }
 
 func pollGarmin() {
 	fmt.Printf("[%s] Polling Garmin KML feed...\n", time.Now().Format(time.RFC3339))
 	client := &http.Client{Timeout: 30 * time.Second}
-	req, err := http.NewRequest("GET", config.GarminFeedURL, nil)
+	
+	var url string
+	if config.UseTestServer {
+		url = fmt.Sprintf("http://localhost:%s/api/v1/test-kml", config.ServerPort)
+	} else {
+		url = config.GarminFeedURL
+	}
+
+	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		fmt.Printf("Error creating Garmin request: %v\n", err)
 		return
 	}
 
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-	req.SetBasicAuth("", config.GarminPassword)
+	if !config.UseTestServer {
+		req.SetBasicAuth("", config.GarminPassword)
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Printf("Error requesting Garmin feed: %v\n", err)
@@ -329,8 +530,9 @@ func pollGarmin() {
 				Lat:       lat,
 				Timestamp: t,
 				Velocity:  velocity,
+				Battery:   battery,
+				Weather:   "",
 			},
-			Battery:    battery,
 		})
 	}
 
@@ -339,17 +541,42 @@ func pollGarmin() {
 		return
 	}
 
-	// Sort points chronologically (if multiple)
-	// Using basic bubble sort or similar, or just loop through (usually KML has them sorted, let's process them in KML order which is chronologically or reverse. Let's check: typically Garmin feeds have them in chronological order. We can ensure we append points that are newer than our last known point).
+	// 1. Filter out duplicates using read-lock (prevents holding write-lock during network call)
+	var newPoints []GarminPoint
+	storeMutex.RLock()
+	for _, p := range points {
+		isDuplicate := false
+		for _, hist := range store.History {
+			if math.Abs(hist.Lat-p.Lat) < 0.00001 && math.Abs(hist.Lng-p.Lng) < 0.00001 {
+				isDuplicate = true
+				break
+			}
+		}
+		if !isDuplicate {
+			newPoints = append(newPoints, p)
+		}
+	}
+	storeMutex.RUnlock()
+
+	if len(newPoints) == 0 {
+		fmt.Println("No new points found in this poll.")
+		return
+	}
+
+	// 2. Fetch weather for new points (no locks held!)
+	for i := range newPoints {
+		newPoints[i].Weather = getWeatherForCoord(newPoints[i].Lat, newPoints[i].Lng)
+	}
+
+	// 3. Acquire write-lock to update the store and write database
 	storeMutex.Lock()
 	defer storeMutex.Unlock()
 
 	updated := false
-	for _, p := range points {
-		// Check if point is already in store history to prevent duplicates
+	for _, p := range newPoints {
+		// Double-check duplicate under write-lock
 		isDuplicate := false
 		for _, hist := range store.History {
-			// Compare coordinates. Since floating point math can have precision issues, let's compare within 0.00001
 			if math.Abs(hist.Lat-p.Lat) < 0.00001 && math.Abs(hist.Lng-p.Lng) < 0.00001 {
 				isDuplicate = true
 				break
@@ -357,14 +584,12 @@ func pollGarmin() {
 		}
 
 		if !isDuplicate {
-			// Append to history
 			store.History = append(store.History, p.Coordinate)
 			updated = true
 		}
 
 		// Update last point if it is newer
 		if store.LastPoint.Timestamp.IsZero() || p.Timestamp.After(store.LastPoint.Timestamp) {
-			// Check if movement happened relative to previous LastPoint
 			if !store.LastPoint.Timestamp.IsZero() {
 				dist := distanceKM(p.Lat, p.Lng, store.LastPoint.Lat, store.LastPoint.Lng)
 				if dist > 0.1 {
@@ -372,7 +597,6 @@ func pollGarmin() {
 					fmt.Printf("Movement of %.2f km detected! Updating LastMove to %s\n", dist, p.Timestamp.Format(time.RFC3339))
 				}
 			} else {
-				// Seed LastMove
 				store.LastMove = p.Timestamp
 			}
 			store.LastPoint = p
@@ -381,14 +605,7 @@ func pollGarmin() {
 
 	if updated {
 		fmt.Printf("Data store updated with new points. Total coordinates: %d\n", len(store.History))
-		// Release lock to save store, but wait, we have the mutex locked. Let's do it safely.
-		// Save store will require lock, but we can do a direct write since we have the lock here.
-		data, err := json.MarshalIndent(store, "", "  ")
-		if err == nil {
-			_ = os.WriteFile(config.DataFilePath, data, 0644)
-		}
-	} else {
-		fmt.Println("No new points found in this poll.")
+		_ = saveStoreLocked()
 	}
 }
 
@@ -404,6 +621,9 @@ func startWeatherPoller() {
 }
 
 func updateWeather() {
+	if config.UseTestServer {
+		return
+	}
 	storeMutex.RLock()
 	if len(store.History) == 0 {
 		storeMutex.RUnlock()
@@ -412,23 +632,53 @@ func updateWeather() {
 	latestCoord := store.History[len(store.History)-1]
 	storeMutex.RUnlock()
 
-	url := fmt.Sprintf("%s?latitude=%f&longitude=%f&current_weather=true", config.OpenMeteoURL, latestCoord.Lat, latestCoord.Lng)
-	client := &http.Client{Timeout: 10 * time.Second}
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		fmt.Printf("Error creating weather request: %v\n", err)
-		return
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-	resp, err := client.Do(req)
+	weather, err := fetchWeather(latestCoord.Lat, latestCoord.Lng)
 	if err != nil {
 		fmt.Printf("Error requesting Open-Meteo weather: %v\n", err)
 		return
 	}
+
+	storeMutex.Lock()
+	currentWeather = weather
+	storeMutex.Unlock()
+	fmt.Printf("Updated weather state to: %s\n", weather)
+}
+
+func mapWeatherCode(code int) string {
+	switch {
+	case code == 0 || code == 1:
+		return "clear"
+	case code == 2 || code == 3:
+		return "cloudy"
+	case code == 45 || code == 48:
+		return "foggy"
+	case (code >= 51 && code <= 57) || (code >= 80 && code <= 82) || code == 61 || code == 63 || code == 65 || code == 66 || code == 67:
+		return "rainy"
+	case (code >= 71 && code <= 77) || code == 85 || code == 86:
+		return "snowy"
+	case code >= 95 && code <= 99:
+		return "stormy"
+	default:
+		return "clear"
+	}
+}
+
+func fetchWeather(lat, lng float64) (string, error) {
+	url := fmt.Sprintf("%s?latitude=%f&longitude=%f&current_weather=true", config.OpenMeteoURL, lat, lng)
+	client := &http.Client{Timeout: 10 * time.Second}
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return
+		return "", fmt.Errorf("weather API status %d", resp.StatusCode)
 	}
 
 	var data struct {
@@ -436,33 +686,307 @@ func updateWeather() {
 			WeatherCode int `json:"weathercode"`
 		} `json:"current_weather"`
 	}
-
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return "", err
+	}
+
+	return mapWeatherCode(data.CurrentWeather.WeatherCode), nil
+}
+
+func getWeatherForCoord(lat, lng float64) string {
+	if config.UseTestServer {
+		storeMutex.RLock()
+		defer storeMutex.RUnlock()
+		return currentWeather
+	}
+	weather, err := fetchWeather(lat, lng)
+	if err != nil {
+		fmt.Printf("Error fetching weather for (%.4f, %.4f): %v. Using fallback.\n", lat, lng, err)
+		storeMutex.RLock()
+		defer storeMutex.RUnlock()
+		return currentWeather
+	}
+	return weather
+}
+
+func handleTestKML(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/xml")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	kmlData := GenerateKML()
+	w.Write([]byte(kmlData))
+
+	// Increment the test step for the next poll
+	testMutex.Lock()
+	if testCurrentStep < testMaxSteps-1 {
+		testCurrentStep++
+		fmt.Printf("Test KML served. Advanced test step to %d/%d\n", testCurrentStep, testMaxSteps-1)
+	} else {
+		fmt.Println("Test KML served. Trajectory completed (at final step).")
+	}
+	testMutex.Unlock()
+}
+
+func saveConfig() error {
+	data, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile("config.json", data, 0644)
+}
+
+func handleSettings(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	if r.Method == http.MethodGet {
+		storeMutex.RLock()
+		defer storeMutex.RUnlock()
+		json.NewEncoder(w).Encode(config)
 		return
 	}
 
-	// Map weather code to descriptive string
-	code := data.CurrentWeather.WeatherCode
-	var weatherDesc string
-	switch {
-	case code == 0 || code == 1:
-		weatherDesc = "clear"
-	case code == 2 || code == 3:
-		weatherDesc = "cloudy"
-	case code == 45 || code == 48:
-		weatherDesc = "foggy"
-	case (code >= 51 && code <= 57) || (code >= 80 && code <= 82) || code == 61 || code == 63 || code == 65 || code == 66 || code == 67:
-		weatherDesc = "rainy"
-	case (code >= 71 && code <= 77) || code == 85 || code == 86:
-		weatherDesc = "snowy"
-	case code >= 95 && code <= 99:
-		weatherDesc = "stormy"
-	default:
-		weatherDesc = "clear"
+	if r.Method == http.MethodPost {
+		var req struct {
+			UseTestServer       bool `json:"use_test_server"`
+			PollIntervalSeconds int  `json:"poll_interval_seconds"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		storeMutex.Lock()
+		defer storeMutex.Unlock()
+
+		oldUseTestServer := config.UseTestServer
+		config.UseTestServer = req.UseTestServer
+		config.PollIntervalSeconds = req.PollIntervalSeconds
+
+		// Handle Backup / Restore
+		if config.UseTestServer && !oldUseTestServer {
+			backupPath := strings.TrimSuffix(config.DataFilePath, filepath.Ext(config.DataFilePath)) + "_backup" + filepath.Ext(config.DataFilePath)
+			if _, err := os.Stat(backupPath); os.IsNotExist(err) {
+				fmt.Printf("Backing up live database to %s...\n", backupPath)
+				err := copyFile(config.DataFilePath, backupPath)
+				if err != nil {
+					fmt.Printf("Warning: failed to backup database: %v\n", err)
+				}
+			}
+			store.History = make([]Coordinate, 0)
+			store.LastMove = time.Time{}
+			store.LastPoint = GarminPoint{}
+			_ = saveStoreLocked()
+			InitTestRoute()
+		} else if !config.UseTestServer && oldUseTestServer {
+			backupPath := strings.TrimSuffix(config.DataFilePath, filepath.Ext(config.DataFilePath)) + "_backup" + filepath.Ext(config.DataFilePath)
+			if _, err := os.Stat(backupPath); err == nil {
+				fmt.Printf("Restoring live database from %s...\n", backupPath)
+				err := copyFile(backupPath, config.DataFilePath)
+				if err != nil {
+					fmt.Printf("Error restoring live database: %v\n", err)
+				} else {
+					_ = os.Remove(backupPath)
+					_ = reloadStoreLocked()
+				}
+			}
+		}
+
+		_ = saveConfig()
+
+		var newInterval time.Duration
+		if config.PollIntervalSeconds > 0 {
+			newInterval = time.Duration(config.PollIntervalSeconds) * time.Second
+		} else {
+			newInterval = time.Duration(config.GarminPollIntervalMinutes) * time.Minute
+		}
+		pollIntervalChan <- newInterval
+
+		go pollGarmin()
+
+		json.NewEncoder(w).Encode(config)
+		return
 	}
 
+	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+}
+
+func handleTestReset(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
 	storeMutex.Lock()
-	currentWeather = weatherDesc
-	storeMutex.Unlock()
-	fmt.Printf("Updated weather state to: %s (code %d)\n", weatherDesc, code)
+	defer storeMutex.Unlock()
+
+	backupPath := strings.TrimSuffix(config.DataFilePath, filepath.Ext(config.DataFilePath)) + "_backup" + filepath.Ext(config.DataFilePath)
+	if _, err := os.Stat(backupPath); os.IsNotExist(err) {
+		fmt.Printf("Backing up live database to %s...\n", backupPath)
+		err := copyFile(config.DataFilePath, backupPath)
+		if err != nil {
+			fmt.Printf("Warning: failed to backup database: %v\n", err)
+		}
+	}
+
+	store.History = make([]Coordinate, 0)
+	store.LastMove = time.Time{}
+	store.LastPoint = GarminPoint{}
+	_ = saveStoreLocked()
+
+	InitTestRoute()
+
+	go pollGarmin()
+
+	json.NewEncoder(w).Encode(map[string]string{"status": "reset"})
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, in)
+	if err != nil {
+		return err
+	}
+	return out.Sync()
+}
+
+func saveStoreLocked() error {
+	if db == nil {
+		return fmt.Errorf("database is not initialized")
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Clear existing history
+	_, err = tx.Exec("DELETE FROM history")
+	if err != nil {
+		return err
+	}
+
+	// Insert history
+	stmt, err := tx.Prepare("INSERT INTO history (lng, lat, timestamp, velocity, battery, weather) VALUES (?, ?, ?, ?, ?, ?)")
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, pt := range store.History {
+		_, err = stmt.Exec(pt.Lng, pt.Lat, pt.Timestamp.Format(time.RFC3339), pt.Velocity, pt.Battery, pt.Weather)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Save metadata
+	metaStmt, err := tx.Prepare("INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)")
+	if err != nil {
+		return err
+	}
+	defer metaStmt.Close()
+
+	_, err = metaStmt.Exec("high_score", strconv.Itoa(store.HighScore))
+	if err != nil {
+		return err
+	}
+
+	if !store.LastMove.IsZero() {
+		_, err = metaStmt.Exec("last_move", store.LastMove.Format(time.RFC3339))
+		if err != nil {
+			return err
+		}
+	} else {
+		_, err = tx.Exec("DELETE FROM metadata WHERE key = 'last_move'")
+		if err != nil {
+			return err
+		}
+	}
+
+	if !store.LastPoint.Timestamp.IsZero() {
+		lastPointBytes, err := json.Marshal(store.LastPoint)
+		if err == nil {
+			_, err = metaStmt.Exec("last_point", string(lastPointBytes))
+			if err != nil {
+				return err
+			}
+		}
+	} else {
+		_, err = tx.Exec("DELETE FROM metadata WHERE key = 'last_point'")
+		if err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
+func reloadStoreLocked() error {
+	if db == nil {
+		return fmt.Errorf("database is not initialized")
+	}
+
+	// Read history
+	rows, err := db.Query("SELECT lng, lat, timestamp, velocity, battery, weather FROM history ORDER BY id ASC")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	store.History = make([]Coordinate, 0)
+	for rows.Next() {
+		var pt Coordinate
+		var tsStr string
+		err := rows.Scan(&pt.Lng, &pt.Lat, &tsStr, &pt.Velocity, &pt.Battery, &pt.Weather)
+		if err != nil {
+			return err
+		}
+		pt.Timestamp, _ = time.Parse(time.RFC3339, tsStr)
+		store.History = append(store.History, pt)
+	}
+
+	// Read metadata
+	rowsMeta, err := db.Query("SELECT key, value FROM metadata")
+	if err != nil {
+		return err
+	}
+	defer rowsMeta.Close()
+
+	// Reset metadata first
+	store.HighScore = 0
+	store.LastMove = time.Time{}
+	store.LastPoint = GarminPoint{}
+
+	for rowsMeta.Next() {
+		var key, val string
+		if err := rowsMeta.Scan(&key, &val); err != nil {
+			return err
+		}
+		switch key {
+		case "high_score":
+			store.HighScore, _ = strconv.Atoi(val)
+		case "last_move":
+			store.LastMove, _ = time.Parse(time.RFC3339, val)
+		case "last_point":
+			_ = json.Unmarshal([]byte(val), &store.LastPoint)
+		}
+	}
+
+	return nil
 }

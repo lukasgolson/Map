@@ -241,6 +241,24 @@ body.light-theme .crt-glow {
   width: 145px;
 }
 
+#follow-toggle {
+  position: absolute;
+  top: 90px;
+  right: 310px;
+  z-index: 5;
+  font-family: var(--font-retro);
+  font-size: 9px;
+  padding: 10px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: all 0.2s ease;
+  outline: none;
+  width: 155px;
+}
+
 #sfx-toggle {
   position: absolute;
   top: 90px;
@@ -567,8 +585,20 @@ body.light-theme .telemetry-label {
   .battery-container {
     width: 140px;
   }
-  #music-toggle {
+  #follow-toggle {
     top: 130px;
+    right: 20px;
+    width: 145px;
+  }
+  #music-toggle {
+    top: 180px;
+    right: 20px;
+    width: 145px;
+  }
+  #sfx-toggle {
+    top: 230px;
+    right: 20px;
+    width: 145px;
   }
   #hud-bottom {
     flex-direction: column;
@@ -724,4 +754,65 @@ body.light-theme #cloudy-overlay {
 }
 .retro-tooltip::before {
   border-top-color: var(--neon-cyan) !important;
+}
+
+/* Track Pellet (GPS dots) Styles */
+.track-pellet-single-icon {
+  background: transparent;
+  border: none;
+}
+.track-pellet-single {
+  width: 10px;
+  height: 10px;
+  background-color: #ffffff;
+  border: 2px solid var(--neon-orange);
+  border-radius: 50%;
+  box-shadow: 0 0 6px var(--neon-orange);
+  display: block;
+}
+
+.track-pellet-mult-icon {
+  background: transparent;
+  border: none;
+}
+.track-pellet-mult {
+  width: 20px;
+  height: 20px;
+  background-color: var(--terminal-gray);
+  border: 2px solid var(--neon-cyan);
+  color: var(--neon-cyan);
+  border-radius: 50%;
+  box-shadow: 0 0 10px var(--neon-cyan);
+  font-family: var(--font-retro);
+  font-size: 8px;
+  font-weight: bold;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-shadow: 0 0 3px var(--neon-cyan);
+}
+
+.splash-credit {
+  font-family: var(--font-retro);
+  font-size: 8px;
+  color: rgba(255, 255, 255, 0.3);
+  margin-top: 80px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.bottom-credit {
+  position: absolute;
+  bottom: 4px;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-family: var(--font-retro);
+  font-size: 8px;
+  color: rgba(255, 255, 255, 0.4);
+  text-shadow: 0 0 2px rgba(255, 255, 255, 0.2);
+  z-index: 6;
+  pointer-events: none;
+  text-transform: uppercase;
+  letter-spacing: 1px;
 }

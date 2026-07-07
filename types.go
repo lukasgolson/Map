@@ -7,6 +7,8 @@ type Config struct {
 	GarminFeedURL             string  `json:"garmin_feed_url"`
 	GarminPassword            string  `json:"garmin_password"`
 	GarminPollIntervalMinutes int     `json:"garmin_poll_interval_minutes"`
+	UseTestServer             bool    `json:"use_test_server"`
+	PollIntervalSeconds       int     `json:"poll_interval_seconds"`
 	OpenMeteoURL              string  `json:"open_meteo_url"`
 	DataFilePath              string  `json:"data_file_path"`
 	GoalLatitude              float64 `json:"goal_latitude"`
@@ -19,11 +21,13 @@ type Coordinate struct {
 	Lat       float64   `json:"lat"`
 	Timestamp time.Time `json:"timestamp"`
 	Velocity  float64   `json:"velocity"`
+	Battery   int       `json:"battery"`
+	Weather   string    `json:"weather"`
+	Heading   float64   `json:"heading"`
 }
 
 type GarminPoint struct {
 	Coordinate
-	Battery   int       `json:"battery"`
 }
 
 type DashboardPayload struct {

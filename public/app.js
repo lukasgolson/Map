@@ -9,6 +9,20 @@ let baseTileLayer;
 let goalMarker = null;
 let currentTileUrl = '';
 
+// Extrapolation and smoothing variables
+let targetAvatarLatLng = null;
+let visualAvatarLatLng = null;
+let extrapolationPolyline = null;
+let pollIntervalSeconds = 600; // default 10 minutes
+let lastUpdateClientTime = null;
+let previousUpdateClientTime = null;
+let gpsTimeScale = 1.0;
+let lastExtrapolatedLatLng = null;
+let isFollowingDino = true;
+let isZooming = false;
+let pendingUpdateMap = false;
+let trackDots = [];
+
 // State data cache
 let currentData = {
   currentState: 'disconnected',
@@ -38,6 +52,8 @@ let audioTimer = null; // Sequencer timer reference
 let devStateOverride = 'auto';
 let devTimeOverride = 'auto';
 let devWeatherOverride = 'auto';
+let lastLightningTime = 0;
+let lightningFlashIntensity = 0;
 
 // Initialize Dashboard
 document.addEventListener('DOMContentLoaded', () => {
@@ -52,6 +68,19 @@ document.addEventListener('DOMContentLoaded', () => {
   const btn = document.getElementById('music-toggle');
   btn.className = 'neon-btn play';
   document.getElementById('music-label').textContent = 'MUSIC: ON';
+
+  // Initialize follow button state
+  updateFollowButtonUI();
+  const followBtn = document.getElementById('follow-toggle');
+  if (followBtn) {
+    followBtn.addEventListener('click', () => {
+      isFollowingDino = !isFollowingDino;
+      updateFollowButtonUI();
+      if (isFollowingDino && visualAvatarLatLng) {
+        map.panTo(visualAvatarLatLng, { animate: true, duration: 1.0 });
+      }
+    });
+  }
 
   // Setup dev panel overrides
   const devToggleBtn = document.getElementById('dev-toggle');
@@ -80,6 +109,38 @@ document.addEventListener('DOMContentLoaded', () => {
     triggerOverrideUpdate();
   });
 
+  const devFeedSelect = document.getElementById('dev-feed');
+  const devPeriodSelect = document.getElementById('dev-period');
+  const devResetRouteBtn = document.getElementById('dev-reset-route');
+
+  if (devFeedSelect) {
+    devFeedSelect.addEventListener('change', (e) => {
+      const useTestServer = e.target.value === 'test';
+      toggleResetRouteButton(useTestServer);
+      updateSettings(useTestServer, parseInt(devPeriodSelect.value, 10));
+    });
+  }
+
+  if (devPeriodSelect) {
+    devPeriodSelect.addEventListener('change', (e) => {
+      const useTestServer = devFeedSelect.value === 'test';
+      const seconds = parseInt(e.target.value, 10);
+      updateSettings(useTestServer, seconds);
+    });
+  }
+
+  if (devResetRouteBtn) {
+    devResetRouteBtn.addEventListener('click', () => {
+      fetch('/api/v1/test/reset', { method: 'POST' })
+        .then(response => response.json())
+        .then(data => {
+          console.log('Test route reset:', data);
+          fetchData();
+        })
+        .catch(err => console.error('Error resetting test route:', err));
+    });
+  }
+
   const devResetBtn = document.getElementById('dev-reset');
   devResetBtn.addEventListener('click', () => {
     devStateOverride = 'auto';
@@ -90,12 +151,18 @@ document.addEventListener('DOMContentLoaded', () => {
     devTimeSelect.value = 'auto';
     devWeatherSelect.value = 'auto';
     
+    if (devFeedSelect) devFeedSelect.value = 'live';
+    if (devPeriodSelect) devPeriodSelect.value = '600';
+    toggleResetRouteButton(false);
+    updateSettings(false, 600);
+    
     triggerOverrideUpdate();
   });
 
   // Set up polling
   fetchData();
-  pollInterval = setInterval(fetchData, 60000); // Poll Go server every 60s
+  pollInterval = setInterval(fetchData, 60000); // Default fallback interval
+  fetchSettings();
   
   // Setup music toggle listener
   btn.addEventListener('click', toggleMusic);
@@ -186,13 +253,16 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   document.addEventListener('keydown', startAudioOnSplash, true);
   document.addEventListener('touchstart', startAudioOnSplash, true);
+
+  // Start avatar animation loop
+  requestAnimationFrame(animateAvatar);
 });
 
 // 1. Map Initialization
 function initMap() {
   // Center map on Vancouver by default, will re-center to latest coordinates once loaded
   map = L.map('map', {
-    zoomControl: true,
+    zoomControl: false,
     boxZoom: false,
     doubleClickZoom: false,
     scrollWheelZoom: true,
@@ -209,9 +279,21 @@ function initMap() {
   }).addTo(map);
 
   map.on('move', updateMapPositionWrapping);
+  map.on('zoomstart', () => {
+    isZooming = true;
+  });
   map.on('zoomend', () => {
+    isZooming = false;
     updateMapPositionWrapping();
     updateZoomLevelDisplay();
+    if (pendingUpdateMap) {
+      pendingUpdateMap = false;
+      updateMap();
+    }
+  });
+  map.on('dragstart', () => {
+    isFollowingDino = false;
+    updateFollowButtonUI();
   });
   
   updateTheme();
@@ -334,6 +416,11 @@ function updateMapPositionWrapping() {
   if (trackPolyline) {
     trackPolyline.setLatLngs(getWrappedLatLngs(trackPolyline.getLatLngs()));
   }
+  if (trackDots && trackDots.length > 0) {
+    trackDots.forEach(dot => {
+      dot.setLatLng(getWrappedLatLng(dot.getLatLng()));
+    });
+  }
 }
 
 // 2. Custom Polyline Snap Engine (Transit Map 45/90 angles)
@@ -404,6 +491,72 @@ function fetchData() {
         data.weather = devWeatherOverride;
       }
       
+      // Check if history updated
+      let historyUpdated = false;
+      const oldHistory = currentData.history || [];
+      const newHistory = data.history || [];
+      
+      if (newHistory.length > 0) {
+        if (oldHistory.length === 0) {
+          historyUpdated = true;
+        } else {
+          const oldLast = oldHistory[oldHistory.length - 1];
+          const newLast = newHistory[newHistory.length - 1];
+          if (oldLast.lat !== newLast.lat || oldLast.lng !== newLast.lng || oldLast.timestamp !== newLast.timestamp) {
+            historyUpdated = true;
+          }
+        }
+      }
+      
+      if (historyUpdated) {
+        const now = performance.now();
+        const oldLastClientTime = lastUpdateClientTime;
+        
+        previousUpdateClientTime = lastUpdateClientTime;
+        lastUpdateClientTime = now;
+        
+        if (newHistory.length >= 2) {
+          const lastPt = newHistory[newHistory.length - 1];
+          const prevPt = newHistory[newHistory.length - 2];
+          
+          // Calculate gpsTimeScale if we have previous client update times
+          if (oldLastClientTime !== null && previousUpdateClientTime !== null) {
+            const clientTimeDiff = now - oldLastClientTime;
+            const gpsTimeDiff = new Date(lastPt.timestamp).getTime() - new Date(prevPt.timestamp).getTime();
+            if (clientTimeDiff > 1000 && gpsTimeDiff > 0) {
+              gpsTimeScale = gpsTimeDiff / clientTimeDiff;
+              console.log(`Updated GPS time scale to ${gpsTimeScale.toFixed(2)} (GPS: ${gpsTimeDiff}ms, Client: ${clientTimeDiff}ms)`);
+            }
+          } else {
+            // Default scale setup
+            const devFeedSelect = document.getElementById('dev-feed');
+            const useTestServer = devFeedSelect && devFeedSelect.value === 'test';
+            if (useTestServer) {
+              gpsTimeScale = 60 / pollIntervalSeconds;
+            } else {
+              gpsTimeScale = 1.0;
+            }
+          }
+          
+          // Check for drastic snaps (e.g. reset or teleporter)
+          if (lastExtrapolatedLatLng) {
+            const errLat = lastPt.lat - lastExtrapolatedLatLng.lat;
+            const errLng = lastPt.lng - lastExtrapolatedLatLng.lng;
+            const jumpDist = Math.sqrt(errLat * errLat + errLng * errLng);
+            if (jumpDist > 0.05) {
+              // Reset scale and snap position immediately
+              gpsTimeScale = 1.0;
+              if (visualAvatarLatLng) {
+                const snappedList = snapToTransitAngles(newHistory);
+                if (snappedList.length > 0) {
+                  visualAvatarLatLng = getWrappedLatLng(snappedList[snappedList.length - 1]);
+                }
+              }
+            }
+          }
+        }
+      }
+      
       currentData = data;
       updateUI();
       updateMap();
@@ -424,6 +577,12 @@ function updateUI() {
   const tripTitleEl = document.getElementById('trip-title');
   if (tripTitleEl) {
     tripTitleEl.textContent = currentData.goalTitle || 'Martin & Olson; Kapakaytay Falls, MB, Canada';
+  }
+
+  // Update splash title dynamically
+  const splashTitleEl = document.getElementById('splash-title');
+  if (splashTitleEl && currentData.goalTitle) {
+    splashTitleEl.textContent = currentData.goalTitle.toUpperCase();
   }
 
   // Calculate Expedition Progress (Non-linear progress)
@@ -479,25 +638,26 @@ function updateUI() {
   
   // Battery indicators
   const batteryPercent = currentData.batteryLevel;
-  document.getElementById('battery-val').textContent = batteryPercent + '%';
-  const batteryBar = document.getElementById('battery-bar');
-  batteryBar.style.width = batteryPercent + '%';
-  
-  // Set battery bar colors based on level
-  if (batteryPercent > 50) {
-    batteryBar.style.backgroundColor = '#39ff14';
-    batteryBar.style.boxShadow = '0 0 8px #39ff14';
-  } else if (batteryPercent > 20) {
-    batteryBar.style.backgroundColor = '#ffaa00';
-    batteryBar.style.boxShadow = '0 0 8px #ffaa00';
-  } else {
-    batteryBar.style.backgroundColor = '#ff0055';
-    batteryBar.style.boxShadow = '0 0 8px #ff0055';
+  const batteryValEl = document.getElementById('battery-val');
+  if (batteryValEl) {
+    batteryValEl.textContent = batteryPercent + '%';
   }
-  
-  // Status badges
-  const stateBadge = document.getElementById('status-badge');
-  stateBadge.className = 'status-badge';
+  const batteryBar = document.getElementById('battery-bar');
+  if (batteryBar) {
+    batteryBar.style.width = batteryPercent + '%';
+    
+    // Set battery bar colors based on level
+    if (batteryPercent > 50) {
+      batteryBar.style.backgroundColor = '#39ff14';
+      batteryBar.style.boxShadow = '0 0 8px #39ff14';
+    } else if (batteryPercent > 20) {
+      batteryBar.style.backgroundColor = '#ffaa00';
+      batteryBar.style.boxShadow = '0 0 8px #ffaa00';
+    } else {
+      batteryBar.style.backgroundColor = '#ff0055';
+      batteryBar.style.boxShadow = '0 0 8px #ff0055';
+    }
+  }
   
   // Determine dynamic render state based on time of day
   let renderState = currentData.currentState;
@@ -506,18 +666,23 @@ function updateUI() {
     renderState = isNight ? 'camping' : 'resting';
   }
   
-  if (renderState === 'paddling') {
-    stateBadge.textContent = 'PADDLING';
-    stateBadge.classList.add('status-paddling');
-  } else if (renderState === 'camping') {
-    stateBadge.textContent = 'SLEEPING';
-    stateBadge.classList.add('status-camping');
-  } else if (renderState === 'resting') {
-    stateBadge.textContent = 'LAZING';
-    stateBadge.classList.add('status-resting');
-  } else {
-    stateBadge.textContent = 'OFFLINE';
-    stateBadge.classList.add('status-disconnected');
+  // Status badges
+  const stateBadge = document.getElementById('status-badge');
+  if (stateBadge) {
+    stateBadge.className = 'status-badge';
+    if (renderState === 'paddling') {
+      stateBadge.textContent = 'PADDLING';
+      stateBadge.classList.add('status-paddling');
+    } else if (renderState === 'camping') {
+      stateBadge.textContent = 'SLEEPING';
+      stateBadge.classList.add('status-camping');
+    } else if (renderState === 'resting') {
+      stateBadge.textContent = 'LAZING';
+      stateBadge.classList.add('status-resting');
+    } else {
+      stateBadge.textContent = 'OFFLINE';
+      stateBadge.classList.add('status-disconnected');
+    }
   }
   
   // Update ticker status text dynamically if not custom overridden
@@ -560,7 +725,10 @@ function updateTelemetry() {
     stormy: '⛈️ STORMY',
     snowy: '❄️ SNOWY'
   };
-  document.getElementById('telemetry-weather').textContent = weatherIcons[weatherVal] || '☀️ CLEAR';
+  const weatherEl = document.getElementById('telemetry-weather');
+  if (weatherEl) {
+    weatherEl.textContent = weatherIcons[weatherVal] || '☀️ CLEAR';
+  }
   
   // 2. Local Time (Live calculation of current real-world UTC time converted to location's local time)
   let timeStr = '12:00 PM';
@@ -593,14 +761,57 @@ function updateTelemetry() {
   } else {
     timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   }
-  document.getElementById('telemetry-time').textContent = timeStr;
+  const timeEl = document.getElementById('telemetry-time');
+  if (timeEl) {
+    timeEl.textContent = timeStr;
+  }
+  
+  // 2b. Last Update Time (UTC timestamp from latest track point formatted to local time)
+  let lastUpdateStr = 'N/A';
+  if (currentData.history && currentData.history.length > 0) {
+    const latestPt = currentData.history[currentData.history.length - 1];
+    if (latestPt.timestamp) {
+      const date = new Date(latestPt.timestamp);
+      if (!isNaN(date.getTime())) {
+        let hours = date.getHours();
+        const minutes = date.getMinutes();
+        const ampm = hours >= 12 ? 'PM' : 'AM';
+        hours = hours % 12;
+        hours = hours ? hours : 12;
+        const minStr = minutes < 10 ? '0' + minutes : minutes;
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        
+        // Calculate relative elapsed time
+        const diffMs = now.getTime() - date.getTime();
+        const diffMins = Math.floor(diffMs / 60000);
+        let relativeStr = 'Just now';
+        if (diffMins >= 1 && diffMins < 60) {
+          relativeStr = `${diffMins}m ago`;
+        } else if (diffMins >= 60 && diffMins < 1440) {
+          relativeStr = `${Math.floor(diffMins / 60)}h ago`;
+        } else if (diffMins >= 1440) {
+          relativeStr = `${Math.floor(diffMins / 1440)}d ago`;
+        }
+        
+        lastUpdateStr = `${month}/${day} ${hours}:${minStr} ${ampm} (${relativeStr})`;
+      }
+    }
+  }
+  const lastUpdateEl = document.getElementById('telemetry-last-update');
+  if (lastUpdateEl) {
+    lastUpdateEl.textContent = lastUpdateStr;
+  }
   
   // 3. Distance moved during the day
   let todayDist = 0;
   if (currentData.history && currentData.history.length >= 2) {
     todayDist = calculateTodayDistance(currentData.history);
   }
-  document.getElementById('telemetry-dist').textContent = todayDist.toFixed(2) + ' km';
+  const distEl = document.getElementById('telemetry-dist');
+  if (distEl) {
+    distEl.textContent = todayDist.toFixed(2) + ' km';
+  }
   
   // 3b. Distance to Goal
   let goalDistStr = 'N/A';
@@ -620,7 +831,10 @@ function updateTelemetry() {
     const latestPt = currentData.history[currentData.history.length - 1];
     velocity = latestPt.velocity || 0;
   }
-  document.getElementById('telemetry-velocity').textContent = velocity.toFixed(2) + ' km/h';
+  const velocityEl = document.getElementById('telemetry-velocity');
+  if (velocityEl) {
+    velocityEl.textContent = velocity.toFixed(2) + ' km/h';
+  }
   
   // 5. Coords
   let coordsStr = '00.000N, 000.000W';
@@ -632,7 +846,10 @@ function updateTelemetry() {
     const lngDir = lng >= 0 ? 'E' : 'W';
     coordsStr = `${Math.abs(lat).toFixed(3)}°${latDir}, ${Math.abs(lng).toFixed(3)}°${lngDir}`;
   }
-  document.getElementById('telemetry-coords').textContent = coordsStr;
+  const coordsEl = document.getElementById('telemetry-coords');
+  if (coordsEl) {
+    coordsEl.textContent = coordsStr;
+  }
 }
 
 function calculateTodayDistance(history) {
@@ -696,14 +913,18 @@ function getDistanceKM(c1, c2) {
 
 // 4. Map Updates
 function updateMap() {
+  if (isZooming) {
+    pendingUpdateMap = true;
+    return;
+  }
+
   if (currentData.history.length === 0) return;
   
-  // Get snapped transit coordinates
+  // Snap actual history coordinates to transit angles
   const snappedLatLngs = snapToTransitAngles(currentData.history);
-  
   const wrappedLatLngs = getWrappedLatLngs(snappedLatLngs);
   
-  // Draw / Update thick neon polyline
+  // Draw / Update thick neon polyline (actual history)
   if (trackPolyline) {
     trackPolyline.setLatLngs(wrappedLatLngs);
   } else {
@@ -717,6 +938,107 @@ function updateMap() {
       shadowBlur: 10
     }).addTo(map);
   }
+
+  // Clear any existing track dots
+  trackDots.forEach(dot => map.removeLayer(dot));
+  trackDots = [];
+
+  // Group consecutive history points at the same location (consecutive visits)
+  const groups = [];
+  if (wrappedLatLngs.length > 0) {
+    let currentGroup = {
+      latlng: wrappedLatLngs[0],
+      indices: [0]
+    };
+    
+    for (let i = 1; i < wrappedLatLngs.length; i++) {
+      const startIdx = currentGroup.indices[0];
+      const startPt = currentData.history[startIdx];
+      const currPt = currentData.history[i];
+      
+      const startLatLng = wrappedLatLngs[startIdx];
+      const currLatLng = wrappedLatLngs[i];
+      
+      // Check if snapped coordinates are identical
+      const sameSnappedLoc = startLatLng.lat === currLatLng.lat && startLatLng.lng === currLatLng.lng;
+      
+      // Check raw GPS error buffer: within 100 meters (0.1 km)
+      const rawDist = getDistanceKM(startPt, currPt);
+      const withinBuffer = rawDist < 0.1;
+      
+      // Check date match: same calendar day
+      const dateStart = new Date(startPt.timestamp);
+      const dateCurr = new Date(currPt.timestamp);
+      const sameDay = dateStart.getFullYear() === dateCurr.getFullYear() &&
+                      dateStart.getMonth() === dateCurr.getMonth() &&
+                      dateStart.getDate() === dateCurr.getDate();
+                      
+      if (sameSnappedLoc && withinBuffer && sameDay) {
+        currentGroup.indices.push(i);
+      } else {
+        groups.push(currentGroup);
+        currentGroup = {
+          latlng: currLatLng,
+          indices: [i]
+        };
+      }
+    }
+    groups.push(currentGroup);
+  }
+
+  // Draw glowing transit-style pellets at each unique coordinate group
+  groups.forEach(group => {
+    let marker;
+    let tooltipHtml = '';
+
+    if (group.indices.length === 1) {
+      const idx = group.indices[0];
+      const pt = currentData.history[idx];
+      const dateStr = new Date(pt.timestamp).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+      const timeStr = new Date(pt.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      tooltipHtml = `GPS Update #${idx + 1}<br>${dateStr} ${timeStr}`;
+
+      const customIcon = L.divIcon({
+        className: 'track-pellet-single-icon',
+        html: `<div class="track-pellet-single"></div>`,
+        iconSize: [10, 10],
+        iconAnchor: [5, 5]
+      });
+
+      marker = L.marker(group.latlng, {
+        icon: customIcon,
+        pane: 'markerPane'
+      });
+    } else {
+      tooltipHtml = `GPS Updates (${group.indices.length} points at this location):<br>`;
+      group.indices.forEach(idx => {
+        const pt = currentData.history[idx];
+        const dateStr = new Date(pt.timestamp).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+        const timeStr = new Date(pt.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        tooltipHtml += `• #${idx + 1}: ${dateStr} ${timeStr}<br>`;
+      });
+
+      const customIcon = L.divIcon({
+        className: 'track-pellet-mult-icon',
+        html: `<div class="track-pellet-mult">${group.indices.length}</div>`,
+        iconSize: [20, 20],
+        iconAnchor: [10, 10]
+      });
+
+      marker = L.marker(group.latlng, {
+        icon: customIcon,
+        pane: 'markerPane'
+      });
+    }
+
+    marker.bindTooltip(tooltipHtml, {
+      className: 'retro-tooltip',
+      direction: 'top'
+    });
+
+    marker.addTo(map);
+    trackDots.push(marker);
+  });
   
   // Latest coordinate
   const latestCoord = getWrappedLatLng(snappedLatLngs[snappedLatLngs.length - 1]);
@@ -751,7 +1073,6 @@ function updateMap() {
     iconSize = [72, 48];
     iconAnchor = [36, 32];
   } else {
-    // disconnected
     svgHtml = getDisconnectedDinoSVG();
     bobbingClass = 'flicker-loop';
     iconSize = [54, 48];
@@ -766,14 +1087,15 @@ function updateMap() {
   });
   
   if (avatarMarker) {
-    avatarMarker.setLatLng(latestCoord);
     avatarMarker.setIcon(customIcon);
   } else {
-    avatarMarker = L.marker(latestCoord, { icon: customIcon }).addTo(map);
+    visualAvatarLatLng = latestCoord;
+    targetAvatarLatLng = latestCoord;
+    avatarMarker = L.marker(visualAvatarLatLng, { icon: customIcon }).addTo(map);
+    
+    // Center map on latest point on initial load
+    map.setView(latestCoord, map.getZoom(), { animate: false });
   }
-  
-  // Pan to latest point on load
-  map.panTo(latestCoord);
 
   // Update Goal flag marker if coordinates are set
   if (currentData.goalLatitude && currentData.goalLongitude) {
@@ -942,10 +1264,25 @@ function animateParticles() {
   }
   
   // Stormy Lightning flash
-  if (currentData.weather === 'stormy' && Math.random() < 0.005) {
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+  if (currentData.weather === 'stormy') {
+    const now = Date.now();
+    // Cooldown of 15 seconds, and a low probability (0.001) per frame once cooldown passes (approx. every 30-40s average)
+    if (now - lastLightningTime > 15000 && Math.random() < 0.001) {
+      lastLightningTime = now;
+      lightningFlashIntensity = 0.85;
+      
+      // Delay thunder by the speed of sound relative to distance (0.6s to 1.8s delay)
+      const delay = 600 + Math.random() * 1200;
+      setTimeout(() => {
+        playSFX('thunder');
+      }, delay);
+    }
+  }
+  
+  if (lightningFlashIntensity > 0) {
+    ctx.fillStyle = `rgba(255, 255, 255, ${lightningFlashIntensity})`;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
-    playSFX('thunder');
+    lightningFlashIntensity -= 0.08; // smooth decay over ~10 frames
   }
   
   // Update and draw particles
@@ -2056,5 +2393,244 @@ function modulateMusicByWeather() {
   
   const targetFreq = Math.min(Math.max(baseFreq * latFactor, 200), 20000);
   masterFilter.frequency.setTargetAtTime(targetFreq, time, 1.5); // 1.5s smooth transition glide!
+}
+
+// Test settings helper functions
+function fetchSettings() {
+  fetch('/api/v1/settings')
+    .then(response => response.json())
+    .then(settings => {
+      const devFeedSelect = document.getElementById('dev-feed');
+      const devPeriodSelect = document.getElementById('dev-period');
+      
+      if (devFeedSelect) {
+        devFeedSelect.value = settings.use_test_server ? 'test' : 'live';
+        toggleResetRouteButton(settings.use_test_server);
+      }
+      if (devPeriodSelect) {
+        devPeriodSelect.value = settings.poll_interval_seconds.toString();
+      }
+      
+      setFetchInterval(settings.poll_interval_seconds);
+    })
+    .catch(err => console.error('Error fetching settings:', err));
+}
+
+function updateSettings(useTestServer, pollIntervalSeconds) {
+  fetch('/api/v1/settings', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      use_test_server: useTestServer,
+      poll_interval_seconds: pollIntervalSeconds
+    })
+  })
+    .then(response => response.json())
+    .then(settings => {
+      console.log('Settings updated:', settings);
+      setFetchInterval(settings.poll_interval_seconds);
+      fetchData();
+    })
+    .catch(err => console.error('Error updating settings:', err));
+}
+
+function setFetchInterval(seconds) {
+  clearInterval(pollInterval);
+  const ms = seconds * 1000;
+  pollInterval = setInterval(fetchData, ms);
+  pollIntervalSeconds = seconds;
+  console.log(`Frontend poll interval set to ${seconds}s`);
+}
+
+function toggleResetRouteButton(useTestServer) {
+  const resetRouteRow = document.getElementById('dev-reset-route-row');
+  if (resetRouteRow) {
+    if (useTestServer) {
+      resetRouteRow.style.display = 'flex';
+    } else {
+      resetRouteRow.style.display = 'none';
+    }
+  }
+}
+
+// Extrapolation and smoothing helpers
+function getExtrapolatedLatLng() {
+  if (!currentData.history || currentData.history.length < 2) {
+    return null;
+  }
+  
+  if (currentData.currentState !== 'paddling') {
+    return null;
+  }
+  
+  const history = currentData.history;
+  const N = history.length;
+  const lastPoint = history[N - 1];
+  const prevPoint = history[N - 2];
+  
+  // Calculate average velocity vector using the last 3-4 points (weighted towards recent)
+  const stepsToUse = Math.min(3, N - 1);
+  const weights = [1.0, 0.5, 0.25];
+  
+  let weightedLatSpeed = 0;
+  let weightedLngSpeed = 0;
+  let weightSum = 0;
+  
+  for (let i = 0; i < stepsToUse; i++) {
+    const curr = history[N - 1 - i];
+    const prev = history[N - 2 - i];
+    
+    const currTime = new Date(curr.timestamp).getTime();
+    const prevTime = new Date(prev.timestamp).getTime();
+    const timeDiff = currTime - prevTime;
+    
+    if (timeDiff > 0) {
+      const dLat = curr.lat - prev.lat;
+      const dLng = curr.lng - prev.lng;
+      const speedLat = dLat / timeDiff;
+      const speedLng = dLng / timeDiff;
+      const weight = weights[i];
+      
+      weightedLatSpeed += speedLat * weight;
+      weightedLngSpeed += speedLng * weight;
+      weightSum += weight;
+    }
+  }
+  
+  if (weightSum === 0) {
+    return null;
+  }
+  
+  const latSpeedGPS = weightedLatSpeed / weightSum;
+  const lngSpeedGPS = weightedLngSpeed / weightSum;
+  
+  // Calculate client-side elapsed time since last update arrived at client
+  const now = performance.now();
+  let elapsedClientMs = 0;
+  if (lastUpdateClientTime !== null) {
+    elapsedClientMs = now - lastUpdateClientTime;
+  }
+  
+  // Convert client elapsed time to GPS-equivalent elapsed time using scale
+  let elapsedGPSEstimateMs = elapsedClientMs * gpsTimeScale;
+  
+  // Cap extrapolation to 1.5 times the GPS time difference to prevent runaway
+  const lastPointTime = new Date(lastPoint.timestamp).getTime();
+  const prevPointTime = new Date(prevPoint.timestamp).getTime();
+  const gpsTimeStep = lastPointTime - prevPointTime;
+  const maxExtrapolateGPSMs = gpsTimeStep > 0 ? 1.5 * gpsTimeStep : 1.5 * pollIntervalSeconds * 1000;
+  
+  if (elapsedGPSEstimateMs > maxExtrapolateGPSMs) {
+    elapsedGPSEstimateMs = maxExtrapolateGPSMs;
+  }
+  
+  const extLat = lastPoint.lat + latSpeedGPS * elapsedGPSEstimateMs;
+  const extLng = lastPoint.lng + lngSpeedGPS * elapsedGPSEstimateMs;
+  
+  // Cache the last raw extrapolated coordinate
+  lastExtrapolatedLatLng = { lat: extLat, lng: extLng };
+  
+  return lastExtrapolatedLatLng;
+}
+
+let lastFrameTime = performance.now();
+function animateAvatar(currentTime) {
+  requestAnimationFrame(animateAvatar);
+  
+  if (!map || currentData.history.length === 0) return;
+  
+  const dt = (currentTime - lastFrameTime) / 1000; // in seconds
+  lastFrameTime = currentTime;
+  
+  if (isZooming) {
+    return;
+  }
+  
+  // 1. Calculate extrapolation and target LatLng in real-time on every frame
+  const extrapolatedPoint = getExtrapolatedLatLng();
+  
+  const historyWithExtrapolation = [...currentData.history];
+  if (extrapolatedPoint) {
+    historyWithExtrapolation.push({
+      lat: extrapolatedPoint.lat,
+      lng: extrapolatedPoint.lng,
+      timestamp: new Date().toISOString(),
+      velocity: currentData.history[currentData.history.length - 1].velocity
+    });
+  }
+  
+  const snappedLatLngs = snapToTransitAngles(historyWithExtrapolation);
+  
+  let targetLatLng;
+  let extSnapped = [];
+  
+  if (extrapolatedPoint && snappedLatLngs.length > 1) {
+    targetLatLng = snappedLatLngs[snappedLatLngs.length - 1];
+    extSnapped = [
+      snappedLatLngs[snappedLatLngs.length - 2],
+      snappedLatLngs[snappedLatLngs.length - 1]
+    ];
+  } else {
+    targetLatLng = snappedLatLngs[snappedLatLngs.length - 1];
+  }
+  
+  const wrappedTargetLatLng = getWrappedLatLng(targetLatLng);
+  targetAvatarLatLng = wrappedTargetLatLng;
+  
+  // 2. Draw / Update extrapolation dotted polyline in real-time
+  if (extSnapped.length > 0) {
+    const wrappedExtLatLngs = getWrappedLatLngs(extSnapped);
+    if (extrapolationPolyline) {
+      extrapolationPolyline.setLatLngs(wrappedExtLatLngs);
+    } else {
+      extrapolationPolyline = L.polyline(wrappedExtLatLngs, {
+        color: '#ff5500',
+        weight: 4,
+        opacity: 0.8,
+        dashArray: '5, 10',
+        lineCap: 'round'
+      }).addTo(map);
+    }
+  } else {
+    if (extrapolationPolyline) {
+      map.removeLayer(extrapolationPolyline);
+      extrapolationPolyline = null;
+    }
+  }
+  
+  // 3. Smoothly glide the avatar marker position in real-time
+  if (avatarMarker) {
+    if (!visualAvatarLatLng) {
+      visualAvatarLatLng = L.latLng(wrappedTargetLatLng.lat, wrappedTargetLatLng.lng);
+    } else {
+      // Lerp visual position to wrappedTargetLatLng with a half-life of 0.3s
+      const factor = 1 - Math.exp(-dt / 0.3);
+      const newLat = visualAvatarLatLng.lat + (wrappedTargetLatLng.lat - visualAvatarLatLng.lat) * factor;
+      const newLng = visualAvatarLatLng.lng + (wrappedTargetLatLng.lng - visualAvatarLatLng.lng) * factor;
+      visualAvatarLatLng = L.latLng(newLat, newLng);
+    }
+    avatarMarker.setLatLng(visualAvatarLatLng);
+    
+    // 4. Update follow camera
+    if (isFollowingDino && !isZooming) {
+      map.setView(visualAvatarLatLng, map.getZoom(), { animate: false });
+    }
+  }
+}
+
+function updateFollowButtonUI() {
+  const followBtn = document.getElementById('follow-toggle');
+  const label = document.getElementById('follow-label');
+  if (followBtn && label) {
+    if (isFollowingDino) {
+      followBtn.className = 'neon-btn play';
+      label.textContent = 'FOLLOW: ON';
+    } else {
+      followBtn.className = 'neon-btn mute';
+      label.textContent = 'FOLLOW: OFF';
+    }
+  }
 }
 
