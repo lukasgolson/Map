@@ -50,7 +50,7 @@ func main() {
 	publicDir := filepath.Join(".", "public")
 	http.Handle("/", http.FileServer(http.Dir(publicDir)))
 
-	fmt.Printf("Starting Project Dino-Transit server on port %s...\n", config.ServerPort)
+	fmt.Printf("Starting Project Lukas-Alexander-Transit server on port %s...\n", config.ServerPort)
 	if err := http.ListenAndServe(":"+config.ServerPort, nil); err != nil {
 		fmt.Printf("Server failed: %v\n", err)
 	}
@@ -97,7 +97,7 @@ func handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	storeMutex.RLock()
-	state := calculateState(store.LastMove, store.LastPoint.Timestamp)
+	state := calculateState(store.LastMove, store.LastPoint.Timestamp, store.LastPoint.Velocity)
 	statusText := getStatusText(state, store.LastPoint.Velocity)
 
 	// Calculate current score (total distance in meters)
@@ -133,10 +133,13 @@ func handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 }
 
 // calculateState decides if paddling, camping, resting, or disconnected
-func calculateState(lastMove time.Time, lastUpdate time.Time) string {
+func calculateState(lastMove time.Time, lastUpdate time.Time, velocity float64) string {
 	// If last parsed point is older than 24 hours, device is offline/disconnected
 	if lastUpdate.IsZero() || time.Since(lastUpdate) > 24*time.Hour {
 		return "disconnected"
+	}
+	if velocity > 20.0 {
+		return "driving"
 	}
 	if lastMove.IsZero() {
 		return "resting"
@@ -153,20 +156,22 @@ func calculateState(lastMove time.Time, lastUpdate time.Time) string {
 // getStatusText returns humorous status based on state and speed
 func getStatusText(state string, velocity float64) string {
 	switch state {
+	case "driving":
+		return "Driving down the highway! Lukas and Alexander are on the move."
 	case "paddling":
 		if velocity > 5.0 {
-			return "Cruising at warp speed! Dino arms flailing!"
+			return "Cruising at warp speed! Lukas and Alexander's arms flailing!"
 		} else if velocity > 2.0 {
-			return "Paddling upstream. Steady dino pace."
+			return "Paddling upstream. Steady pace."
 		} else {
 			return "Drifting slowly. Watching pixel clouds."
 		}
 	case "camping":
-		return "Chilling by the campfire. Roasting marshmallows on tiny arms."
+		return "Chilling by the campfire. Roasting marshmallows."
 	case "resting":
-		return "Sleeping soundly under the stars. Dino is dreaming of meteor-free skies."
+		return "Sleeping soundly under the stars. Lukas and Alexander are dreaming of meteor-free skies."
 	case "disconnected":
-		return "Out of range. Dino is offline. Searching for satellite signals..."
+		return "Out of range. Lukas and Alexander are offline. Searching for satellite signals..."
 	default:
 		return "Exploring the digital terrarium."
 	}
@@ -179,7 +184,7 @@ func distanceKM(lat1, lon1, lat2, lon2 float64) float64 {
 	dLon := (lon2 - lon1) * math.Pi / 180
 	a := math.Sin(dLat/2)*math.Sin(dLat/2) +
 		math.Cos(lat1*math.Pi/180)*math.Cos(lat2*math.Pi/180)*
-		math.Sin(dLon/2)*math.Sin(dLon/2)
+			math.Sin(dLon/2)*math.Sin(dLon/2)
 	c := 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
 	return R * c
 }
@@ -330,7 +335,7 @@ func pollGarmin() {
 				Timestamp: t,
 				Velocity:  velocity,
 			},
-			Battery:    battery,
+			Battery: battery,
 		})
 	}
 

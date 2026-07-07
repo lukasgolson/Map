@@ -1,4 +1,4 @@
-// Project Dino-Transit (v1.0)
+// Project Lukas-Alexander-Transit (v1.0)
 // Frontend Controller, Custom Polyline Snap Engine, Particle Canvas, & Web Audio Jukebox
 
 let map;
@@ -387,43 +387,18 @@ function fetchData() {
     .then(data => {
       // If dev state is overridden, apply it to the incoming data
       if (devStateOverride !== 'auto') {
-        data.currentState = devStateOverride;
-        if (devStateOverride === 'paddling') {
-          data.statusText = "[DEV] Paddling upstream. Steady dino pace.";
-        } else if (devStateOverride === 'camping') {
-          data.statusText = "[DEV] Chilling by the campfire. Roasting marshmallows.";
-        } else if (devStateOverride === 'resting') {
-          data.statusText = "[DEV] Sleeping soundly under the stars. Dino is dreaming.";
-        } else {
-          data.statusText = "[DEV] Out of range. Dino is offline.";
-        }
-      }
-      
-      // If dev weather is overridden, apply it to the incoming data
-      if (devWeatherOverride !== 'auto') {
-        data.weather = devWeatherOverride;
-      }
-      
-      currentData = data;
-      updateUI();
-      updateMap();
-      updateAudioVibe(currentData.currentState);
-    })
-    .catch(err => {
-      console.error('Error fetching dashboard data:', err);
-      if (devStateOverride === 'auto') {
-        document.getElementById('ticker-text').textContent = 'Connection Error. Retrying...';
-      }
-    });
-}
-
-function updateUI() {
-  updateTheme();
-
-  // Update trip header title
-  const tripTitleEl = document.getElementById('trip-title');
-  if (tripTitleEl) {
-    tripTitleEl.textContent = currentData.goalTitle || 'Martin & Olson; Kapakaytay Falls, MB, Canada';
+    currentData.currentState = devStateOverride;
+    if (devStateOverride === 'driving') {
+      currentData.statusText = "[DEV] Driving down the highway! Lukas and Alexander are on the move.";
+    } else if (devStateOverride === 'paddling') {
+      currentData.statusText = "[DEV] Paddling upstream. Steady pace.";
+    } else if (devStateOverride === 'camping') {
+      currentData.statusText = "[DEV] Chilling by the campfire. Roasting marshmallows.";
+    } else if (devStateOverride === 'resting') {
+      currentData.statusText = "[DEV] Sleeping soundly under the stars. Lukas and Alexander are dreaming.";
+    } else {
+      currentData.statusText = "[DEV] Out of range. Lukas and Alexander are offline.";
+    }
   }
 
   // Calculate Expedition Progress (Non-linear progress)
@@ -506,7 +481,10 @@ function updateUI() {
     renderState = isNight ? 'camping' : 'resting';
   }
   
-  if (renderState === 'paddling') {
+  if (renderState === 'driving') {
+    stateBadge.textContent = 'DRIVING';
+    stateBadge.classList.add('status-paddling'); // reuse paddling color for now
+  } else if (renderState === 'paddling') {
     stateBadge.textContent = 'PADDLING';
     stateBadge.classList.add('status-paddling');
   } else if (renderState === 'camping') {
@@ -735,7 +713,12 @@ function updateMap() {
     renderState = isNight ? 'camping' : 'resting';
   }
   
-  if (renderState === 'paddling') {
+  if (renderState === 'driving') {
+    svgHtml = getHatchbackSVG();
+    bobbingClass = 'bobbing-loop';
+    iconSize = [64, 48];
+    iconAnchor = [32, 24];
+  } else if (renderState === 'paddling') {
     svgHtml = getCanoeSVG();
     bobbingClass = 'bobbing-loop';
     iconSize = [64, 48];
@@ -746,16 +729,16 @@ function updateMap() {
     iconSize = [72, 48];
     iconAnchor = [36, 32];
   } else if (renderState === 'resting') {
-    svgHtml = getRestingHammockSVG();
+    svgHtml = getTwoHammocksSVG();
     bobbingClass = 'bobbing-loop';
-    iconSize = [72, 48];
-    iconAnchor = [36, 32];
+    iconSize = [72, 64];
+    iconAnchor = [36, 40];
   } else {
     // disconnected
-    svgHtml = getDisconnectedDinoSVG();
+    svgHtml = getDisconnectedSVG();
     bobbingClass = 'flicker-loop';
-    iconSize = [54, 48];
-    iconAnchor = [27, 38];
+    iconSize = [64, 48];
+    iconAnchor = [32, 38];
   }
   
   const customIcon = L.divIcon({
@@ -1686,14 +1669,16 @@ function triggerOverrideUpdate() {
   
   if (devStateOverride !== 'auto') {
     currentData.currentState = devStateOverride;
-    if (devStateOverride === 'paddling') {
-      currentData.statusText = "[DEV] Paddling upstream. Steady dino pace.";
+    if (devStateOverride === 'driving') {
+      currentData.statusText = "[DEV] Driving down the highway! Lukas and Alexander are on the move.";
+    } else if (devStateOverride === 'paddling') {
+      currentData.statusText = "[DEV] Paddling upstream. Steady pace.";
     } else if (devStateOverride === 'camping') {
       currentData.statusText = "[DEV] Chilling by the campfire. Roasting marshmallows.";
     } else if (devStateOverride === 'resting') {
-      currentData.statusText = "[DEV] Sleeping soundly under the stars. Dino is dreaming.";
+      currentData.statusText = "[DEV] Sleeping soundly under the stars. Lukas and Alexander are dreaming.";
     } else {
-      currentData.statusText = "[DEV] Out of range. Dino is offline.";
+      currentData.statusText = "[DEV] Out of range. Lukas and Alexander are offline.";
     }
   }
   
@@ -1759,7 +1744,7 @@ function getCanoeSVG() {
   // Orange-brown wood canoe containing two green NES-style pixel art dinosaurs
   return `
     <svg width="64" height="48" viewBox="0 0 64 48" xmlns="http://www.w3.org/2000/svg" style="image-rendering: pixelated; width: 100%; height: 100%;">
-      <!-- Dino 1 (Rear/Left) -->
+      <!-- Lukas (Rear/Left) -->
       <g transform="translate(16, 4)">
         <rect x="6" y="0" width="8" height="6" fill="#39ff14"/>
         <rect x="12" y="2" width="2" height="2" fill="#000"/>
@@ -1769,7 +1754,7 @@ function getCanoeSVG() {
         <rect x="0" y="10" width="2" height="6" fill="#39ff14"/>
         <rect x="10" y="12" width="4" height="2" fill="#39ff14"/>
       </g>
-      <!-- Dino 2 (Front/Right) -->
+      <!-- Alexander (Front/Right) -->
       <g transform="translate(28, 6)">
         <rect x="6" y="0" width="8" height="6" fill="#2ad10d"/>
         <rect x="12" y="2" width="2" height="2" fill="#000"/>
@@ -1792,25 +1777,30 @@ function getCanoeSVG() {
   `;
 }
 
-function getOneTentSVG() {
-  // Triangular pixel-art tent with a warm campfire
+function getHatchbackSVG() {
+  // Orange-brown wood hatchback with 2 dinos
   return `
     <svg width="64" height="48" viewBox="0 0 64 48" xmlns="http://www.w3.org/2000/svg" style="image-rendering: pixelated; width: 100%; height: 100%;">
-      <!-- Background pines -->
-      <polygon points="12,24 6,36 18,36" fill="#142e16"/>
-      <polygon points="52,24 46,36 58,36" fill="#142e16"/>
+      <!-- Car body -->
+      <path d="M 10,20 L 20,10 L 44,10 L 54,20 L 58,20 L 58,34 L 6,34 L 6,20 Z" fill="#d32f2f" stroke="#b71c1c" stroke-width="2"/>
+      <!-- Windows -->
+      <path d="M 14,20 L 22,12 L 30,12 L 30,20 Z" fill="#81d4fa" stroke="#4fc3f7" stroke-width="1"/>
+      <path d="M 32,20 L 32,12 L 42,12 L 50,20 Z" fill="#81d4fa" stroke="#4fc3f7" stroke-width="1"/>
+      <!-- Wheels -->
+      <circle cx="16" cy="36" r="6" fill="#212121" stroke="#424242" stroke-width="2"/>
+      <circle cx="48" cy="36" r="6" fill="#212121" stroke="#424242" stroke-width="2"/>
       
-      <!-- Tent -->
-      <polygon points="34,12 18,36 50,36" fill="#007d7d" stroke="#004747" stroke-width="2"/>
-      <polygon points="34,12 34,36 50,36" fill="#00acac"/>
-      <polygon points="34,22 26,36 42,36" fill="#151515"/>
-      
-      <!-- Campfire -->
-      <g transform="translate(8, 32)">
-        <line x1="0" y1="4" x2="8" y2="0" stroke="#5c2c16" stroke-width="2.5"/>
-        <line x1="1" y1="0" x2="7" y2="4" stroke="#5c2c16" stroke-width="2.5"/>
-        <polygon points="4,-7 1,-1 7,-1" fill="#ff3300"/>
-        <polygon points="4,-4 2,0 6,0" fill="#ffcc00"/>
+      <!-- Lukas (Driver) -->
+      <g transform="translate(18, 12)">
+        <rect x="0" y="0" width="6" height="4" fill="#39ff14"/>
+        <rect x="4" y="1" width="1" height="1" fill="#000"/>
+        <rect x="-2" y="4" width="8" height="4" fill="#39ff14"/>
+      </g>
+      <!-- Alexander (Passenger) -->
+      <g transform="translate(36, 12)">
+        <rect x="0" y="0" width="6" height="4" fill="#2ad10d"/>
+        <rect x="4" y="1" width="1" height="1" fill="#000"/>
+        <rect x="-2" y="4" width="8" height="4" fill="#2ad10d"/>
       </g>
     </svg>
   `;
@@ -1844,16 +1834,15 @@ function getTwoTentsSVG() {
   `;
 }
 
-function getRestingHammockSVG() {
-  // Orange-brown wood hammock between two pixel art palm trees, with a lounging green dino wearing cool sunglasses
+function getTwoHammocksSVG() {
+  // Orange-brown wood hammock between two pixel art palm trees, with 2 lounging green dinos wearing cool sunglasses
   return `
-    <svg width="72" height="48" viewBox="0 0 72 48" xmlns="http://www.w3.org/2000/svg" style="image-rendering: pixelated; width: 100%; height: 100%;">
+    <svg width="72" height="64" viewBox="0 0 72 64" xmlns="http://www.w3.org/2000/svg" style="image-rendering: pixelated; width: 100%; height: 100%;">
       <!-- Left Palm Tree -->
       <g transform="translate(4, 2)">
-        <!-- Trunk -->
-        <rect x="7" y="10" width="4" height="28" fill="#8d4a1f"/>
+        <rect x="7" y="10" width="4" height="40" fill="#8d4a1f"/>
         <rect x="6" y="14" width="2" height="2" fill="#b05d2e"/>
-        <rect x="6" y="22" width="2" height="2" fill="#b05d2e"/>
+        <rect x="6" y="30" width="2" height="2" fill="#b05d2e"/>
         <!-- Leaves -->
         <polygon points="9,10 0,4 6,7" fill="#1b850a"/>
         <polygon points="9,10 18,4 12,7" fill="#1b850a"/>
@@ -1864,10 +1853,9 @@ function getRestingHammockSVG() {
       
       <!-- Right Palm Tree -->
       <g transform="translate(54, 2)">
-        <!-- Trunk -->
-        <rect x="7" y="10" width="4" height="28" fill="#8d4a1f"/>
+        <rect x="7" y="10" width="4" height="40" fill="#8d4a1f"/>
         <rect x="6" y="14" width="2" height="2" fill="#b05d2e"/>
-        <rect x="6" y="22" width="2" height="2" fill="#b05d2e"/>
+        <rect x="6" y="30" width="2" height="2" fill="#b05d2e"/>
         <!-- Leaves -->
         <polygon points="9,10 0,4 6,7" fill="#1b850a"/>
         <polygon points="9,10 18,4 12,7" fill="#1b850a"/>
@@ -1876,24 +1864,34 @@ function getRestingHammockSVG() {
         <polygon points="9,10 9,0 8,6" fill="#22aa0f"/>
       </g>
       
-      <!-- Hammock ropes -->
+      <!-- Hammock 1 ropes & bed -->
       <line x1="13" y1="20" x2="20" y2="28" stroke="#aa7a1e" stroke-width="2"/>
       <line x1="61" y1="20" x2="54" y2="28" stroke="#aa7a1e" stroke-width="2"/>
-      
-      <!-- Hammock Bed (draped curve) -->
       <path d="M 20,28 Q 37,39 54,28" stroke="#d5601a" stroke-width="3" fill="none"/>
       
-      <!-- Lounging Green Dino inside Hammock -->
+      <!-- Lounging Green Lukas inside Hammock 1 -->
       <g transform="translate(24, 18)">
-        <!-- Dino tail hanging slightly -->
         <rect x="0" y="4" width="3" height="6" fill="#39ff14"/>
         <rect x="1" y="8" width="2" height="4" fill="#32c710"/>
-        <!-- Body lying back -->
         <rect x="2" y="2" width="16" height="8" fill="#39ff14"/>
-        <rect x="4" y="6" width="14" height="4" fill="#32c710"/> <!-- shadow -->
-        <!-- Head resting back -->
+        <rect x="4" y="6" width="14" height="4" fill="#32c710"/>
         <rect x="14" y="-2" width="7" height="7" fill="#39ff14"/>
-        <!-- Cool sunglasses -->
+        <rect x="16" y="0" width="5" height="2" fill="#000"/>
+        <line x1="15" y1="0" x2="16" y2="0" stroke="#000" stroke-width="1"/>
+      </g>
+
+      <!-- Hammock 2 ropes & bed -->
+      <line x1="13" y1="36" x2="20" y2="44" stroke="#aa7a1e" stroke-width="2"/>
+      <line x1="61" y1="36" x2="54" y2="44" stroke="#aa7a1e" stroke-width="2"/>
+      <path d="M 20,44 Q 37,55 54,44" stroke="#d5601a" stroke-width="3" fill="none"/>
+
+      <!-- Lounging Green Alexander inside Hammock 2 -->
+      <g transform="translate(24, 34)">
+        <rect x="0" y="4" width="3" height="6" fill="#2ad10d"/>
+        <rect x="1" y="8" width="2" height="4" fill="#209c09"/>
+        <rect x="2" y="2" width="16" height="8" fill="#2ad10d"/>
+        <rect x="4" y="6" width="14" height="4" fill="#209c09"/>
+        <rect x="14" y="-2" width="7" height="7" fill="#2ad10d"/>
         <rect x="16" y="0" width="5" height="2" fill="#000"/>
         <line x1="15" y1="0" x2="16" y2="0" stroke="#000" stroke-width="1"/>
       </g>
@@ -1901,31 +1899,36 @@ function getRestingHammockSVG() {
   `;
 }
 
-function getDisconnectedDinoSVG() {
-  // Dino holding a search flag or looking at a flashing warning antenna pole
+function getDisconnectedSVG() {
+  // 2 Dinos holding a search flag or looking at a flashing warning antenna pole
   return `
-    <svg width="54" height="48" viewBox="0 0 54 48" xmlns="http://www.w3.org/2000/svg" style="image-rendering: pixelated; width: 100%; height: 100%;">
-      <!-- Dino standing, scratching head looking at antenna -->
+    <svg width="64" height="48" viewBox="0 0 64 48" xmlns="http://www.w3.org/2000/svg" style="image-rendering: pixelated; width: 100%; height: 100%;">
+      <!-- Lukas standing -->
       <g transform="translate(6, 12)">
         <rect x="6" y="0" width="10" height="8" fill="#39ff14"/>
-        <rect x="8" y="2" width="2" height="2" fill="#000"/> <!-- eye -->
-        <rect x="0" y="8" width="12" height="14" fill="#39ff14"/> <!-- body -->
+        <rect x="8" y="2" width="2" height="2" fill="#000"/>
+        <rect x="0" y="8" width="12" height="14" fill="#39ff14"/>
         <rect x="2" y="22" width="3" height="4" fill="#32c710"/>
         <rect x="7" y="22" width="3" height="4" fill="#32c710"/>
-        <!-- tail -->
         <path d="M 0,14 L -4,18 L -4,20 Z" fill="#39ff14"/>
-        <!-- arm scratching head -->
         <rect x="12" y="8" width="2" height="4" fill="#39ff14"/>
         <rect x="10" y="6" width="4" height="2" fill="#39ff14"/>
       </g>
+      <!-- Alexander standing -->
+      <g transform="translate(24, 16)">
+        <rect x="6" y="0" width="8" height="6" fill="#2ad10d"/>
+        <rect x="8" y="2" width="2" height="2" fill="#000"/>
+        <rect x="0" y="6" width="10" height="12" fill="#2ad10d"/>
+        <rect x="2" y="18" width="3" height="4" fill="#209c09"/>
+        <rect x="7" y="18" width="3" height="4" fill="#209c09"/>
+        <path d="M 0,12 L -4,16 L -4,18 Z" fill="#2ad10d"/>
+        <rect x="10" y="6" width="2" height="4" fill="#2ad10d"/>
+      </g>
       <!-- Warning Antenna pole -->
-      <g transform="translate(36, 14)">
-        <!-- Antenna metal pole -->
+      <g transform="translate(46, 14)">
         <rect x="5" y="6" width="2" height="24" fill="#888888"/>
         <rect x="2" y="28" width="8" height="2" fill="#888888"/>
-        <!-- Satellite dish bowl shape -->
         <path d="M 0,8 C 0,16 12,16 12,8" stroke="#aaaaaa" stroke-width="2.5" fill="none"/>
-        <!-- Flashing Red warning circle -->
         <circle cx="6" cy="1" r="3.5" fill="#ff0055" class="flicker-loop"/>
       </g>
     </svg>
