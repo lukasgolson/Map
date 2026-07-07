@@ -1,0 +1,727 @@
+/* 
+   Project Dino-Transit (v1.0) Style Sheet
+   Aesthetic: Nostalgic retro gaming meets clean modern contours.
+*/
+
+:root {
+  --bg-color: #121216;
+  --hud-bg: rgba(18, 18, 22, 0.85);
+  --neon-orange: #ff5500;
+  --neon-cyan: #00f3ff;
+  --neon-pink: #ff007f;
+  --neon-green: #39ff14;
+  --pastel-cream: #f4edd2;
+  --terminal-gray: #1a1a1f;
+  --text-color: #ffffff;
+  --text-shadow-color: rgba(255, 255, 255, 0.4);
+  --leaflet-bg: #111;
+  
+  --font-retro: 'Press Start 2P', monospace;
+  --font-ticker: 'VT323', monospace;
+  --font-modern: 'Outfit', sans-serif;
+}
+
+body.light-theme {
+  --bg-color: #d6cca9; /* warm aged parchment/tea paper */
+  --hud-bg: rgba(214, 204, 169, 0.9);
+  --terminal-gray: #bdae85;
+  --text-color: #38301b; /* dark rustic charcoal brown */
+  --text-shadow-color: rgba(0, 0, 0, 0.05);
+  --leaflet-bg: #d6cca9;
+  
+  /* Overridden neon accents for light theme (dark gem tones for readability) */
+  --neon-cyan: #0b6c7c; /* deep teal */
+  --neon-orange: #a03c00; /* burnt orange */
+  --neon-green: #257c0b; /* forest green */
+  --neon-pink: #9a0c4f; /* deep raspberry */
+}
+
+body.dark-theme {
+  --bg-color: #121216;
+  --hud-bg: rgba(18, 18, 22, 0.85);
+  --terminal-gray: #1a1a1f;
+  --text-color: #ffffff;
+  --text-shadow-color: rgba(255, 255, 255, 0.4);
+  --leaflet-bg: #111;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  user-select: none;
+}
+
+body, html {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background-color: var(--bg-color);
+  font-family: var(--font-modern);
+}
+
+/* Digital Terrarium Layout */
+#game-container {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  border: 10px solid #222;
+  box-shadow: inset 0 0 100px rgba(0, 0, 0, 0.8);
+}
+
+/* Map Style and Retro Monochromatic Filter */
+#map {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+  background-color: #1e1e24;
+}
+
+body.light-theme .leaflet-tile-pane {
+  /* Soft pastel rendering: desaturates Voyager tiles slightly and increases contrast for high legibility */
+  filter: saturate(0.82) brightness(0.95) contrast(1.05);
+}
+
+/* Apply a retro-grade filter to Leaflet tiles to create a Game Boy / Vector monitor aesthetic */
+.leaflet-tile-container {
+  /* Removed to prevent excessive darkening */
+}
+
+.leaflet-container {
+  background: var(--leaflet-bg) !important;
+}
+
+/* Hide default leaflet attribution / UI buttons to keep it clean and solitary */
+.leaflet-control-zoom {
+  border: 2px solid var(--neon-cyan) !important;
+  background: var(--terminal-gray) !important;
+  box-shadow: 0 0 10px var(--neon-cyan) !important;
+}
+.leaflet-control-zoom-in, .leaflet-control-zoom-out {
+  color: var(--neon-cyan) !important;
+  background: var(--terminal-gray) !important;
+  font-family: var(--font-retro) !important;
+  font-size: 10px !important;
+}
+.leaflet-control-attribution {
+  display: none !important;
+}
+
+/* Weather & Canvas Particle Overlay */
+#weather-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 3;
+  pointer-events: none;
+}
+
+/* CRT Screen Effects (Z: 6) */
+.scanlines {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(
+    rgba(18, 16, 16, 0) 50%, 
+    rgba(0, 0, 0, 0.15) 50%
+  ), linear-gradient(
+    90deg,
+    rgba(255, 0, 0, 0.03),
+    rgba(0, 255, 0, 0.01),
+    rgba(0, 0, 255, 0.03)
+  );
+  background-size: 100% 4px, 6px 100%;
+  z-index: 6;
+  pointer-events: none;
+  opacity: 0.7;
+}
+
+.crt-glow {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 6;
+  pointer-events: none;
+  box-shadow: inset 0 0 80px rgba(0, 0, 0, 0.6);
+}
+
+body.light-theme .scanlines {
+  opacity: 0.25;
+}
+
+body.light-theme .crt-glow {
+  box-shadow: inset 0 0 80px rgba(0, 0, 0, 0.25);
+}
+
+/* Top HUD (Z: 5) */
+#hud-top {
+  position: absolute;
+  top: 20px;
+  left: 20px;
+  right: 20px;
+  z-index: 5;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background-color: var(--hud-bg);
+  border: 3px solid var(--neon-cyan);
+  padding: 12px 24px;
+  border-radius: 4px;
+  box-shadow: 0 0 15px rgba(0, 243, 255, 0.3), inset 0 0 10px rgba(0, 243, 255, 0.1);
+  font-family: var(--font-retro);
+  font-size: 11px;
+  color: var(--text-color);
+}
+
+.hud-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.hud-label {
+  color: var(--neon-cyan);
+  text-shadow: 0 0 5px var(--neon-cyan);
+  font-size: 9px;
+  letter-spacing: 1px;
+}
+
+.hud-value {
+  color: var(--text-color);
+  text-shadow: 0 0 5px var(--text-shadow-color);
+}
+
+/* Battery Indicator */
+.battery-container {
+  width: 180px;
+}
+
+.battery-bar-wrapper {
+  width: 100%;
+  height: 10px;
+  border: 2px solid var(--text-color);
+  padding: 1px;
+  background-color: var(--terminal-gray);
+}
+
+.battery-bar {
+  height: 100%;
+  background-color: var(--neon-green);
+  box-shadow: 0 0 8px var(--neon-green);
+  transition: width 0.5s ease-in-out;
+}
+
+/* Neon Music & SFX Buttons */
+#music-toggle {
+  position: absolute;
+  top: 90px;
+  right: 20px;
+  z-index: 5;
+  font-family: var(--font-retro);
+  font-size: 9px;
+  padding: 10px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: all 0.2s ease;
+  outline: none;
+  width: 145px;
+}
+
+#sfx-toggle {
+  position: absolute;
+  top: 90px;
+  right: 175px;
+  z-index: 5;
+  font-family: var(--font-retro);
+  font-size: 9px;
+  padding: 10px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: all 0.2s ease;
+  outline: none;
+  width: 125px;
+}
+
+.neon-btn {
+  background: var(--terminal-gray);
+}
+
+.neon-btn.mute {
+  border: 3px solid var(--neon-pink);
+  color: var(--neon-pink);
+  box-shadow: 0 0 8px var(--neon-pink);
+  text-shadow: 0 0 4px var(--neon-pink);
+}
+
+.neon-btn.play {
+  border: 3px solid var(--neon-green);
+  color: var(--neon-green);
+  box-shadow: 0 0 12px var(--neon-green);
+  text-shadow: 0 0 6px var(--neon-green);
+}
+
+.neon-btn:hover {
+  transform: scale(1.05);
+}
+
+/* Telemetry Panel (Z: 5) */
+#telemetry-panel {
+  position: absolute;
+  top: 90px;
+  left: 20px;
+  z-index: 5;
+  width: 250px;
+  background-color: var(--hud-bg);
+  border: 3px solid var(--neon-cyan);
+  border-radius: 4px;
+  padding: 12px 16px;
+  box-shadow: 0 0 15px rgba(0, 243, 255, 0.25), inset 0 0 10px rgba(0, 243, 255, 0.1);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.telemetry-header {
+  font-family: var(--font-retro);
+  font-size: 9px;
+  color: var(--neon-cyan);
+  text-shadow: 0 0 5px var(--neon-cyan);
+  text-align: center;
+  border-bottom: 2px dashed var(--neon-cyan);
+  padding-bottom: 6px;
+  margin-bottom: 2px;
+}
+
+.telemetry-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  color: var(--text-color);
+}
+
+.telemetry-label {
+  font-family: var(--font-retro);
+  font-size: 8px;
+  color: #888;
+}
+
+body.light-theme .telemetry-label {
+  color: #666;
+}
+
+.telemetry-value {
+  font-family: var(--font-ticker);
+  font-size: 16px;
+  font-weight: bold;
+}
+
+/* Dev Test Panel styles */
+.dev-toggle {
+  position: absolute;
+  top: 140px;
+  right: 20px;
+  z-index: 5;
+  font-family: var(--font-retro);
+  font-size: 9px;
+  padding: 10px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+  border: 3px solid var(--neon-pink);
+  color: var(--neon-pink);
+  box-shadow: 0 0 8px var(--neon-pink);
+  text-shadow: 0 0 4px var(--neon-pink);
+}
+
+.dev-panel {
+  position: absolute;
+  top: 190px;
+  right: 20px;
+  z-index: 5;
+  width: 200px;
+  background-color: var(--hud-bg);
+  border: 3px solid var(--neon-pink);
+  border-radius: 4px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-shadow: 0 0 15px var(--neon-pink);
+  font-family: var(--font-modern);
+}
+
+.dev-panel.hidden {
+  display: none !important;
+}
+
+.dev-reset-btn {
+  width: 100%;
+  border: 3px solid var(--neon-pink);
+  color: var(--neon-pink);
+  box-shadow: 0 0 8px var(--neon-pink);
+  text-shadow: 0 0 4px var(--neon-pink);
+  font-family: var(--font-retro);
+  font-size: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: all 0.2s ease;
+}
+
+.dev-reset-btn:hover {
+  background-color: rgba(255, 0, 85, 0.15);
+  box-shadow: 0 0 12px var(--neon-pink);
+}
+
+.dev-header {
+  font-family: var(--font-retro);
+  font-size: 9px;
+  color: var(--neon-pink);
+  text-shadow: 0 0 4px var(--neon-pink);
+  text-align: center;
+  border-bottom: 2px dashed var(--neon-pink);
+  padding-bottom: 6px;
+  margin-bottom: 4px;
+}
+
+.dev-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  color: var(--text-color);
+}
+
+.dev-row label {
+  font-family: var(--font-retro);
+  font-size: 8px;
+  color: var(--text-color);
+  opacity: 0.7;
+}
+
+.dev-row select {
+  background-color: var(--terminal-gray);
+  color: var(--text-color);
+  border: 2px solid var(--neon-pink);
+  font-family: var(--font-retro);
+  font-size: 8px;
+  padding: 4px;
+  outline: none;
+  cursor: pointer;
+}
+
+/* Bottom HUD / Ticker Tape Status Panel (Z: 5) */
+#hud-bottom {
+  position: absolute;
+  bottom: 20px;
+  left: 20px;
+  right: 20px;
+  z-index: 5;
+  background-color: var(--hud-bg);
+  border: 3px solid var(--neon-orange);
+  border-radius: 4px;
+  padding: 12px 20px;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  box-shadow: 0 0 15px rgba(255, 85, 0, 0.3), inset 0 0 10px rgba(255, 85, 0, 0.1);
+}
+
+.status-badge-container {
+  flex-shrink: 0;
+}
+
+.status-badge {
+  font-family: var(--font-retro);
+  font-size: 10px;
+  padding: 8px 12px;
+  border-radius: 2px;
+  text-align: center;
+  letter-spacing: 1px;
+}
+
+.status-paddling {
+  background-color: rgba(0, 243, 255, 0.2);
+  border: 2px solid var(--neon-cyan);
+  color: var(--neon-cyan);
+  box-shadow: 0 0 10px var(--neon-cyan);
+  text-shadow: 0 0 5px var(--neon-cyan);
+  animation: pulse-cyan 2s infinite;
+}
+
+.status-camping {
+  background-color: rgba(57, 255, 20, 0.2);
+  border: 2px solid var(--neon-green);
+  color: var(--neon-green);
+  box-shadow: 0 0 10px var(--neon-green);
+  text-shadow: 0 0 5px var(--neon-green);
+}
+
+.status-resting {
+  background-color: rgba(255, 204, 0, 0.2);
+  border: 2px solid #ffcc00;
+  color: #ffcc00;
+  box-shadow: 0 0 10px #ffcc00;
+  text-shadow: 0 0 5px #ffcc00;
+}
+
+.status-disconnected {
+  background-color: rgba(255, 0, 85, 0.2);
+  border: 2px solid var(--neon-pink);
+  color: var(--neon-pink);
+  box-shadow: 0 0 10px var(--neon-pink);
+  text-shadow: 0 0 5px var(--neon-pink);
+  animation: blink-pink 1.2s infinite steps(2);
+}
+
+.ticker-container {
+  display: flex;
+  align-items: center;
+  flex-grow: 1;
+  font-family: var(--font-ticker);
+  font-size: 24px;
+  color: var(--text-color);
+  overflow: hidden;
+  height: 30px;
+}
+
+.ticker-bracket {
+  color: var(--neon-orange);
+  text-shadow: 0 0 5px var(--neon-orange);
+  font-weight: bold;
+}
+
+.ticker-text {
+  margin: 0 10px;
+  white-space: nowrap;
+  letter-spacing: 0.5px;
+}
+
+/* Custom Marker Sprite Animations */
+.pixel-avatar-marker {
+  /* Do not transition 'all' or 'transform' to avoid interfering with Leaflet positioning */
+  transition: opacity 0.3s ease;
+}
+
+.pixel-avatar-img {
+  width: 48px;
+  height: 48px;
+  image-rendering: pixelated;
+  filter: drop-shadow(0 0 6px rgba(0,0,0,0.8));
+}
+
+.bobbing-loop {
+  animation: bobbing 1.5s ease-in-out infinite alternate;
+}
+
+.flicker-loop {
+  animation: flicker 0.2s infinite alternate;
+}
+
+/* Keyframe Animations */
+@keyframes bobbing {
+  0% { transform: translateY(0); }
+  100% { transform: translateY(-8px); }
+}
+
+@keyframes flicker {
+  0% { opacity: 0.95; }
+  100% { opacity: 1.0; }
+}
+
+@keyframes pulse-cyan {
+  0%, 100% { box-shadow: 0 0 5px var(--neon-cyan); }
+  50% { box-shadow: 0 0 15px var(--neon-cyan); }
+}
+
+@keyframes blink-pink {
+  0%, 100% { opacity: 1.0; }
+  50% { opacity: 0.4; }
+}
+
+/* Mobile Responsiveness */
+@media (max-width: 768px) {
+  #hud-top {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 10px 15px;
+  }
+  .battery-container {
+    width: 140px;
+  }
+  #music-toggle {
+    top: 130px;
+  }
+  #hud-bottom {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+  .ticker-container {
+    font-size: 20px;
+    width: 100%;
+  }
+}
+/* Cloudy Weather Overlay */
+#cloudy-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 2;
+  pointer-events: none;
+  transition: opacity 1.5s ease-in-out;
+  opacity: 0;
+  background: radial-gradient(circle, transparent 40%, rgba(100, 110, 120, 0.4) 100%), rgba(80, 85, 90, 0.15);
+}
+
+#cloudy-overlay.active {
+  opacity: 1;
+}
+
+body.light-theme #cloudy-overlay {
+  background: radial-gradient(circle, transparent 40%, rgba(140, 130, 110, 0.3) 100%), rgba(120, 110, 100, 0.12);
+}
+
+/* Splash Screen Overlay */
+.splash-screen {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-color: #0b0b0e;
+  z-index: 9999; /* Highest priority overlay */
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  flex-direction: column;
+  transition: opacity 0.8s cubic-bezier(0.19, 1, 0.22, 1), visibility 0.8s;
+  cursor: pointer;
+}
+
+.splash-content {
+  text-align: center;
+  padding: 20px;
+}
+
+.splash-title {
+  font-family: var(--font-retro);
+  font-size: 32px;
+  color: var(--neon-cyan, #00f3ff);
+  text-shadow: 0 0 10px var(--neon-cyan, #00f3ff);
+  margin-bottom: 12px;
+  letter-spacing: 2px;
+}
+
+.splash-subtitle {
+  font-family: var(--font-modern);
+  font-size: 11px;
+  color: #888;
+  letter-spacing: 4px;
+  margin-bottom: 60px;
+}
+
+.splash-btn-pulse {
+  font-family: var(--font-retro);
+  font-size: 14px;
+  color: var(--neon-pink, #ff0055);
+  text-shadow: 0 0 8px var(--neon-pink, #ff0055);
+  border: 3px solid var(--neon-pink, #ff0055);
+  box-shadow: 0 0 12px var(--neon-pink, #ff0055);
+  padding: 14px 28px;
+  border-radius: 4px;
+  cursor: pointer;
+  animation: pulse-blink 1.2s infinite;
+  display: inline-block;
+  background-color: rgba(255, 0, 85, 0.05);
+}
+
+@keyframes pulse-blink {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+    box-shadow: 0 0 12px var(--neon-pink, #ff0055);
+  }
+  50% {
+    opacity: 0.5;
+    transform: scale(0.97);
+    box-shadow: 0 0 4px var(--neon-pink, #ff0055);
+  }
+}
+
+.splash-screen.fade-out {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* Expedition Header & Progress Bar elements */
+.title-container {
+  flex: 2;
+  min-width: 0;
+}
+
+#trip-title {
+  font-size: 9px;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.progress-container {
+  flex: 1.5;
+  max-width: 250px;
+  margin: 0 20px;
+}
+
+.progress-bar-wrapper {
+  width: 100%;
+  height: 10px;
+  border: 2px solid var(--text-color);
+  padding: 1px;
+  background-color: var(--terminal-gray);
+}
+
+.progress-bar {
+  height: 100%;
+  background-color: var(--neon-orange);
+  box-shadow: 0 0 8px var(--neon-orange);
+  transition: width 0.5s ease-in-out;
+}
+
+/* Retro Leaflet Tooltip */
+.retro-tooltip {
+  background-color: var(--hud-bg) !important;
+  border: 2px solid var(--neon-cyan) !important;
+  box-shadow: 0 0 8px var(--neon-cyan) !important;
+  color: var(--text-color) !important;
+  font-family: var(--font-retro) !important;
+  font-size: 7px !important;
+  padding: 4px 8px !important;
+  border-radius: 4px !important;
+  text-shadow: 0 0 2px var(--text-color) !important;
+}
+.retro-tooltip::before {
+  border-top-color: var(--neon-cyan) !important;
+}

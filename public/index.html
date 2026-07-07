@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dino-Transit Dashboard</title>
+  
+  <!-- Retro and Modern Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
+  
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+  
+  <!-- Custom Styling -->
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- Main Digital Terrarium Container -->
+  <div id="game-container">
+    <!-- Map Element (Base Topography) -->
+    <div id="map"></div>
+    <div id="cloudy-overlay"></div>
+    
+    <!-- HTML5 Canvas Particle Layer (Weather & Campfire Smoke) -->
+    <canvas id="weather-canvas"></canvas>
+    
+    <!-- Scanline effect for CRT/retro monitor feel -->
+    <div class="scanlines"></div>
+    <div class="crt-glow"></div>
+
+    <!-- Retro Arcade HUD (Z: 5) -->
+    <div id="hud-top">
+      <div class="hud-item title-container">
+        <span class="hud-label">EXPEDITION</span>
+        <span id="trip-title" class="hud-value">BOOTING EXPEDITION...</span>
+      </div>
+
+      <div class="hud-item progress-container">
+        <span class="hud-label">EXPEDITION PROGRESS</span>
+        <div class="progress-bar-wrapper">
+          <div id="progress-bar" class="progress-bar" style="width: 0%;"></div>
+        </div>
+        <span id="progress-val" class="hud-value">0%</span>
+      </div>
+
+      <div class="hud-item battery-container">
+        <span class="hud-label">BATTERY</span>
+        <div class="battery-bar-wrapper">
+          <div id="battery-bar" class="battery-bar" style="width: 100%;"></div>
+        </div>
+        <span id="battery-val" class="hud-value">100%</span>
+      </div>
+    </div>
+
+    <!-- Floating Telemetry / Stats Panel (Z: 5) -->
+    <div id="telemetry-panel">
+      <div class="telemetry-header">SYSTEM METRICS</div>
+      <div class="telemetry-row">
+        <span class="telemetry-label">WEATHER</span>
+        <span id="telemetry-weather" class="telemetry-value">☀️ CLEAR</span>
+      </div>
+      <div class="telemetry-row">
+        <span class="telemetry-label">LOCAL TIME</span>
+        <span id="telemetry-time" class="telemetry-value">12:00 PM</span>
+      </div>
+      <div class="telemetry-row">
+        <span class="telemetry-label">TODAY DIST</span>
+        <span id="telemetry-dist" class="telemetry-value">0.00 km</span>
+      </div>
+      <div class="telemetry-row">
+        <span class="telemetry-label">GOAL DIST</span>
+        <span id="telemetry-goal-dist" class="telemetry-value">0.00 km</span>
+      </div>
+      <div class="telemetry-row">
+        <span class="telemetry-label">VELOCITY</span>
+        <span id="telemetry-velocity" class="telemetry-value">0.00 km/h</span>
+      </div>
+      <div class="telemetry-row">
+        <span class="telemetry-label">COORDS</span>
+        <span id="telemetry-coords" class="telemetry-value">00.000N, 000.000W</span>
+      </div>
+    </div>
+
+    <!-- Right-aligned Music Toggle Button -->
+    <button id="music-toggle" class="neon-btn mute" aria-label="Toggle Music">
+      <span class="music-icon">🎵</span>
+      <span id="music-label">MUSIC: OFF</span>
+    </button>
+
+    <!-- SFX Toggle Button -->
+    <button id="sfx-toggle" class="neon-btn play" aria-label="Toggle SFX">
+      <span class="sfx-icon">🔊</span>
+      <span id="sfx-label">SFX: ON</span>
+    </button>
+
+    <!-- Dev Test Mode Panel -->
+    <button id="dev-toggle" class="neon-btn dev-toggle" aria-label="Toggle Dev Controls">DEV</button>
+    <div id="dev-panel" class="dev-panel hidden">
+      <div class="dev-header">DEV PANEL</div>
+      <div class="dev-row">
+        <label for="dev-state">STATE:</label>
+        <select id="dev-state">
+          <option value="auto">Auto (Poll)</option>
+          <option value="paddling">Paddling</option>
+          <option value="camping">Camping</option>
+          <option value="resting">Resting</option>
+          <option value="disconnected">Disconnected</option>
+        </select>
+      </div>
+      <div class="dev-row">
+        <label for="dev-time">TIME:</label>
+        <select id="dev-time">
+          <option value="auto">Auto (Real)</option>
+          <option value="morning">Morning (Day)</option>
+          <option value="afternoon">Afternoon (Day)</option>
+          <option value="evening">Evening (Night)</option>
+          <option value="latenight">Late Night (Night)</option>
+        </select>
+      </div>
+      <div class="dev-row">
+        <label for="dev-weather">WEATHER:</label>
+        <select id="dev-weather">
+          <option value="auto">Auto (Poll)</option>
+          <option value="clear">Clear</option>
+          <option value="cloudy">Cloudy</option>
+          <option value="rainy">Rainy</option>
+          <option value="stormy">Stormy</option>
+          <option value="snowy">Snowy</option>
+        </select>
+      </div>
+      <div class="dev-row" style="font-family: var(--font-retro); font-size: 8px; justify-content: space-between; display: flex; align-items: center; color: #888; margin-top: 4px;">
+        <span>ZOOM LEVEL:</span>
+        <span id="dev-zoom-val" style="font-weight: bold; color: #d300ff;">13</span>
+      </div>
+      <div class="dev-row" style="margin-top: 6px;">
+        <button id="dev-reset" class="neon-btn dev-reset-btn">GO LIVE</button>
+      </div>
+    </div>
+
+    <!-- Bottom Ticker Tape Status Panel -->
+    <div id="hud-bottom">
+      <div class="status-badge-container">
+        <div id="status-badge" class="status-badge status-skeleton">UNKNOWN</div>
+      </div>
+      
+      <div class="ticker-container">
+        <div class="ticker-bracket">[</div>
+        <div id="ticker-text" class="ticker-text">Booting Dino-Transit State Engine...</div>
+        <div class="ticker-bracket">]</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Leaflet JS -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  
+  <!-- Retro Splash Screen (Bypasses Autoplay Restrictions on Click) -->
+  <div id="splash-screen" class="splash-screen">
+    <div class="splash-content">
+      <h1 class="splash-title">DINO-TRANSIT</h1>
+      <p class="splash-subtitle">8-BIT DIGITAL TERRARIUM</p>
+      <div class="splash-btn-pulse">PRESS START</div>
+    </div>
+  </div>
+
+  <!-- Frontend Javascript -->
+  <script src="app.js"></script>
+</body>
+</html>

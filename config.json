@@ -1,0 +1,11 @@
+{
+  "server_port": "8080",
+  "garmin_feed_url": "https://share.garmin.com/Feed/Share/lukasgolson",
+  "garmin_password": "6048179714",
+  "garmin_poll_interval_minutes": 10,
+  "open_meteo_url": "https://api.open-meteo.com/v1/forecast",
+  "data_file_path": "data.json",
+  "goal_latitude": 56.0653,
+  "goal_longitude": -98.2004,
+  "goal_title": "Martin & Olson; Kapakaytay Falls, MB, Canada"
+}
