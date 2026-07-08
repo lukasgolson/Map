@@ -877,3 +877,8 @@ body.light-theme #cloudy-overlay {
   white-space: normal;
   text-align: left;
 }
+
+.neon-btn:focus-visible {
+  outline: 2px solid var(--neon-cyan);
+  outline-offset: 2px;
+}
