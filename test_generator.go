@@ -25,23 +25,11 @@ func InitTestRoute() {
 	testMutex.Lock()
 	defer testMutex.Unlock()
 
-	// Bounding box for Vancouver:
-	// Lat: [49.2000, 49.3000]
-	// Lng: [-123.2500, -123.0200]
-	for {
-		lat1 := 49.2000 + rand.Float64()*(49.3000-49.2000)
-		lng1 := -123.2500 + rand.Float64()*(-123.0200 - -123.2500)
-		lat2 := 49.2000 + rand.Float64()*(49.3000-49.2000)
-		lng2 := -123.2500 + rand.Float64()*(-123.0200 - -123.2500)
-
-		if distanceKM(lat1, lng1, lat2, lng2) >= 3.0 {
-			testStartLat = lat1
-			testStartLng = lng1
-			testEndLat = lat2
-			testEndLng = lng2
-			break
-		}
-	}
+	// Set trajectory in Manitoba, starting near Thompson and ending at Kapakaytay Falls goal
+	testStartLat = 55.9800
+	testStartLng = -98.1200
+	testEndLat = 56.0653
+	testEndLng = -98.2004
 
 	testCurrentStep = 0
 	testPoints = make([]GarminPoint, testMaxSteps)
@@ -54,7 +42,7 @@ func InitTestRoute() {
 
 	// Generate a biased random walk ("ant crawl") from start to end
 	// Seed with a timestamp in the past
-	startTime := time.Now().Add(-time.Duration(testMaxSteps) * time.Minute)
+	startTime := departureTime
 	testPoints[0] = GarminPoint{
 		Coordinate: Coordinate{
 			Lat:       testStartLat,

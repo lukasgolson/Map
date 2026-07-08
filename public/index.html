@@ -2,8 +2,8 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Dino-Transit Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>Olson's Adventure Map</title>
   
   <!-- Retro and Modern Google Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -15,6 +15,14 @@
   
   <!-- Custom Styling -->
   <link rel="stylesheet" href="style.css">
+  
+  <!-- PWA Manifest & Icons -->
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#00f3ff">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="apple-touch-icon" href="icon-192.png">
 </head>
 <body>
   <!-- Main Digital Terrarium Container -->
@@ -85,28 +93,39 @@
         <span class="telemetry-label">COORDS</span>
         <span id="telemetry-coords" class="telemetry-value">00.000N, 000.000W</span>
       </div>
+      <div class="telemetry-row">
+        <span class="telemetry-label">DINO STATE</span>
+        <span id="telemetry-state" class="telemetry-value">OFFLINE</span>
+      </div>
+      <div class="telemetry-row status-msg-row">
+        <span class="telemetry-label">STATUS</span>
+        <span id="telemetry-status" class="telemetry-value">Connecting to Dino Tracker...</span>
+      </div>
     </div>
 
-    <!-- Right-aligned Music Toggle Button -->
-    <button id="music-toggle" class="neon-btn mute" aria-label="Toggle Music">
-      <span class="music-icon">🎵</span>
-      <span id="music-label">MUSIC: OFF</span>
-    </button>
+    <!-- Control buttons row -->
+    <div id="controls-row">
+      <!-- Follow Dino Button -->
+      <button id="follow-toggle" class="neon-btn play" aria-label="Toggle Follow Dino">
+        <span class="follow-icon">🦖</span>
+        <span id="follow-label">FOLLOW: ON</span>
+      </button>
 
-    <!-- Follow Dino Button -->
-    <button id="follow-toggle" class="neon-btn play" aria-label="Toggle Follow Dino">
-      <span class="follow-icon">🦖</span>
-      <span id="follow-label">FOLLOW: ON</span>
-    </button>
+      <!-- SFX Toggle Button -->
+      <button id="sfx-toggle" class="neon-btn play" aria-label="Toggle SFX">
+        <span class="sfx-icon">🔊</span>
+        <span id="sfx-label">SFX: ON</span>
+      </button>
 
-    <!-- SFX Toggle Button -->
-    <button id="sfx-toggle" class="neon-btn play" aria-label="Toggle SFX">
-      <span class="sfx-icon">🔊</span>
-      <span id="sfx-label">SFX: ON</span>
-    </button>
+      <!-- Right-aligned Music Toggle Button -->
+      <button id="music-toggle" class="neon-btn mute" aria-label="Toggle Music">
+        <span class="music-icon">🎵</span>
+        <span id="music-label">MUSIC: OFF</span>
+      </button>
 
-    <!-- Dev Test Mode Panel -->
-    <button id="dev-toggle" class="neon-btn dev-toggle" aria-label="Toggle Dev Controls">DEV</button>
+      <!-- Dev Test Mode Panel Toggle -->
+      <button id="dev-toggle" class="neon-btn dev-toggle" aria-label="Toggle Dev Controls">DEV</button>
+    </div>
     <div id="dev-panel" class="dev-panel hidden">
       <div class="dev-header">DEV PANEL</div>
       <div class="dev-row">
@@ -169,19 +188,6 @@
         <button id="dev-reset" class="neon-btn dev-reset-btn">GO LIVE</button>
       </div>
     </div>
-
-    <!-- Bottom Ticker Tape Status Panel -->
-    <div id="hud-bottom">
-      <div class="status-badge-container">
-        <div id="status-badge" class="status-badge status-skeleton">UNKNOWN</div>
-      </div>
-      
-      <div class="ticker-container">
-        <div class="ticker-bracket">[</div>
-        <div id="ticker-text" class="ticker-text">Booting Dino-Transit State Engine...</div>
-        <div class="ticker-bracket">]</div>
-      </div>
-    </div>
   </div>
 
   <!-- Leaflet JS -->
@@ -190,7 +196,7 @@
   <!-- Retro Splash Screen (Bypasses Autoplay Restrictions on Click) -->
   <div id="splash-screen" class="splash-screen">
     <div class="splash-content">
-      <h1 id="splash-title" class="splash-title">DINO-TRANSIT</h1>
+      <h1 id="splash-title" class="splash-title">OLSON'S ADVENTURE</h1>
       <p id="splash-subtitle" class="splash-subtitle">MAP</p>
       <div class="splash-btn-pulse">PRESS START</div>
       <div class="splash-credit">Interactive Map by L. G. Olson</div>
@@ -200,7 +206,9 @@
   <!-- Centered Bottom credit overlay for the main map dashboard -->
   <div class="bottom-credit">Interactive Map by L. G. Olson</div>
 
+  <!-- Algo-Chip composition engine -->
+  <script src="algo-chip.umd.js"></script>
   <!-- Frontend Javascript -->
-  <script src="app.js"></script>
+  <script type="module" src="app.js"></script>
 </body>
 </html>

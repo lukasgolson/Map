@@ -25,6 +25,7 @@ var (
 	currentWeather   string = "clear"
 	pollIntervalChan        = make(chan time.Duration, 10)
 	db               *sql.DB
+	departureTime    time.Time
 )
 
 func main() {
@@ -59,7 +60,7 @@ func main() {
 	publicDir := filepath.Join(".", "public")
 	http.Handle("/", http.FileServer(http.Dir(publicDir)))
 
-	fmt.Printf("Starting Project Dino-Transit server on port %s...\n", config.ServerPort)
+	fmt.Printf("Starting Olson's Adventure Map server on port %s...\n", config.ServerPort)
 	if err := http.ListenAndServe(":"+config.ServerPort, nil); err != nil {
 		fmt.Printf("Server failed: %v\n", err)
 	}
@@ -73,7 +74,19 @@ func loadConfig() error {
 	}
 	defer file.Close()
 	decoder := json.NewDecoder(file)
-	return decoder.Decode(&config)
+	if err := decoder.Decode(&config); err != nil {
+		return err
+	}
+	
+	if config.DepartureTimeStr != "" {
+		departureTime, err = time.Parse(time.RFC3339, config.DepartureTimeStr)
+		if err != nil {
+			fmt.Printf("Warning: failed to parse departure time '%s': %v\n", config.DepartureTimeStr, err)
+		} else {
+			fmt.Printf("Departure time set to: %s\n", departureTime.Format(time.RFC3339))
+		}
+	}
+	return nil
 }
 
 // initDB initializes the SQLite database and migrates data if necessary
@@ -100,7 +113,8 @@ func initDB() error {
 			timestamp TEXT,
 			velocity REAL,
 			battery INTEGER,
-			weather TEXT
+			weather TEXT,
+			heading REAL
 		);
 		CREATE TABLE IF NOT EXISTS metadata (
 			key TEXT PRIMARY KEY,
@@ -110,6 +124,9 @@ func initDB() error {
 	if err != nil {
 		return fmt.Errorf("failed to create database tables: %w", err)
 	}
+
+	// Try to add heading column to handle upgrades safely
+	_, _ = db.Exec("ALTER TABLE history ADD COLUMN heading REAL")
 
 	// Migrate from data.json if it exists
 	if err := migrateFromJSON(); err != nil {
@@ -147,14 +164,14 @@ func migrateFromJSON() error {
 	defer tx.Rollback()
 
 	// Insert history points
-	stmt, err := tx.Prepare("INSERT INTO history (lng, lat, timestamp, velocity, battery, weather) VALUES (?, ?, ?, ?, ?, ?)")
+	stmt, err := tx.Prepare("INSERT INTO history (lng, lat, timestamp, velocity, battery, weather, heading) VALUES (?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 
 	for _, pt := range legacyStore.History {
-		_, err = stmt.Exec(pt.Lng, pt.Lat, pt.Timestamp.Format(time.RFC3339), pt.Velocity, pt.Battery, pt.Weather)
+		_, err = stmt.Exec(pt.Lng, pt.Lat, pt.Timestamp.Format(time.RFC3339), pt.Velocity, pt.Battery, pt.Weather, pt.Heading)
 		if err != nil {
 			return err
 		}
@@ -214,7 +231,7 @@ func loadStore() error {
 	defer storeMutex.Unlock()
 
 	// Query history coordinates
-	rows, err := db.Query("SELECT lng, lat, timestamp, velocity, battery, weather FROM history ORDER BY id ASC")
+	rows, err := db.Query("SELECT lng, lat, timestamp, velocity, battery, weather, heading FROM history ORDER BY id ASC")
 	if err != nil {
 		return err
 	}
@@ -224,11 +241,15 @@ func loadStore() error {
 	for rows.Next() {
 		var pt Coordinate
 		var tsStr string
-		err := rows.Scan(&pt.Lng, &pt.Lat, &tsStr, &pt.Velocity, &pt.Battery, &pt.Weather)
+		var heading sql.NullFloat64
+		err := rows.Scan(&pt.Lng, &pt.Lat, &tsStr, &pt.Velocity, &pt.Battery, &pt.Weather, &heading)
 		if err != nil {
 			return err
 		}
 		pt.Timestamp, _ = time.Parse(time.RFC3339, tsStr)
+		if heading.Valid {
+			pt.Heading = heading.Float64
+		}
 		store.History = append(store.History, pt)
 	}
 
@@ -270,11 +291,35 @@ func handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	storeMutex.RLock()
-	state := calculateState(store.LastMove, store.LastPoint.Timestamp)
-	statusText := getStatusText(state, store.LastPoint.Velocity)
+	
+	// Filter track history: exclude points before the official departure time
+	filteredHistory := make([]Coordinate, 0)
+	for _, pt := range store.History {
+		if pt.Timestamp.After(departureTime) || pt.Timestamp.Equal(departureTime) {
+			filteredHistory = append(filteredHistory, pt)
+		}
+	}
 
-	// Calculate current score (total distance in meters)
-	score := int(calculateTotalDistance(store.History) * 1000)
+	var state string
+	var statusText string
+	var battery int
+	
+	if len(filteredHistory) > 0 {
+		lastPoint := filteredHistory[len(filteredHistory)-1]
+		state = calculateState(store.LastMove, lastPoint.Timestamp)
+		statusText = getStatusText(state, lastPoint.Velocity)
+		battery = lastPoint.Battery
+		if battery <= 0 {
+			battery = 85
+		}
+	} else {
+		state = "disconnected"
+		statusText = "Offline. Expedition departure scheduled."
+		battery = 100
+	}
+
+	// Calculate current score using only filtered expedition points (in meters)
+	score := int(calculateTotalDistance(filteredHistory) * 1000)
 	if score > store.HighScore {
 		storeMutex.RUnlock()
 		storeMutex.Lock()
@@ -284,25 +329,76 @@ func handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 		storeMutex.RLock()
 	}
 
-	battery := store.LastPoint.Battery
-	if battery <= 0 {
-		battery = 85 // Mock fallback battery percentage
-	}
-
 	payload := DashboardPayload{
-		CurrentState:  state,
-		History:       store.History,
-		Weather:       currentWeather,
-		BatteryLevel:  battery,
-		HighScore:     store.HighScore,
-		StatusText:    statusText,
-		GoalLatitude:  config.GoalLatitude,
-		GoalLongitude: config.GoalLongitude,
-		GoalTitle:     config.GoalTitle,
+		CurrentState:       state,
+		History:            filteredHistory,
+		Weather:            currentWeather,
+		BatteryLevel:       battery,
+		HighScore:          store.HighScore,
+		StatusText:         statusText,
+		GoalLatitude:       config.GoalLatitude,
+		GoalLongitude:      config.GoalLongitude,
+		GoalTitle:          config.GoalTitle,
+		EnableDevPanel:     config.EnableDevPanel,
+		ExtrapolatedTarget: calculateExtrapolatedTarget(state, filteredHistory, config.PollIntervalSeconds),
+		DepartureTime:      config.DepartureTimeStr,
 	}
 	storeMutex.RUnlock()
 
 	json.NewEncoder(w).Encode(payload)
+}
+
+// calculateExtrapolatedTarget predicts the position one step ahead when paddling
+func calculateExtrapolatedTarget(state string, history []Coordinate, pollIntervalSeconds int) *Coordinate {
+	if state != "paddling" || len(history) < 2 {
+		return nil
+	}
+
+	lastPoint := history[len(history)-1]
+	prevPoint := history[len(history)-2]
+
+	speedKmh := lastPoint.Velocity
+	if speedKmh <= 0 {
+		distKm := distanceKM(prevPoint.Lat, prevPoint.Lng, lastPoint.Lat, lastPoint.Lng)
+		timeHours := lastPoint.Timestamp.Sub(prevPoint.Timestamp).Hours()
+		if timeHours > 0 {
+			speedKmh = distKm / timeHours
+		}
+	}
+	if speedKmh <= 0 {
+		speedKmh = 5.0
+	}
+
+	headingDeg := lastPoint.Heading
+	if headingDeg == 0.0 {
+		headingDeg = calculateBearing(prevPoint.Lat, prevPoint.Lng, lastPoint.Lat, lastPoint.Lng)
+	}
+
+	avgHeadingRad := headingDeg * math.Pi / 180.0
+
+	timeStep := lastPoint.Timestamp.Sub(prevPoint.Timestamp)
+	if timeStep <= 0 {
+		timeStep = time.Duration(pollIntervalSeconds) * time.Second
+	}
+
+	speedKmPerMs := speedKmh / 3600000.0
+	timeStepMs := float64(timeStep.Milliseconds())
+
+	latSpeedGPS := (speedKmPerMs * math.Cos(avgHeadingRad)) / 111.32
+	lngSpeedGPS := (speedKmPerMs * math.Sin(avgHeadingRad)) / (111.32 * math.Cos(lastPoint.Lat*math.Pi/180.0))
+
+	extLat := lastPoint.Lat + latSpeedGPS*timeStepMs
+	extLng := lastPoint.Lng + lngSpeedGPS*timeStepMs
+
+	return &Coordinate{
+		Lat:       extLat,
+		Lng:       extLng,
+		Timestamp: lastPoint.Timestamp.Add(timeStep),
+		Velocity:  speedKmh,
+		Battery:   lastPoint.Battery,
+		Weather:   lastPoint.Weather,
+		Heading:   headingDeg,
+	}
 }
 
 // calculateState decides if paddling, camping, resting, or disconnected
@@ -355,6 +451,20 @@ func distanceKM(lat1, lon1, lat2, lon2 float64) float64 {
 		math.Sin(dLon/2)*math.Sin(dLon/2)
 	c := 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
 	return R * c
+}
+
+// calculateBearing computes the bearing from point 1 to point 2 in degrees (0-360)
+func calculateBearing(lat1, lon1, lat2, lon2 float64) float64 {
+	lat1Rad := lat1 * math.Pi / 180
+	lat2Rad := lat2 * math.Pi / 180
+	dLonRad := (lon2 - lon1) * math.Pi / 180
+
+	y := math.Sin(dLonRad) * math.Cos(lat2Rad)
+	x := math.Cos(lat1Rad)*math.Sin(lat2Rad) -
+		math.Sin(lat1Rad)*math.Cos(lat2Rad)*math.Cos(dLonRad)
+
+	brng := math.Atan2(y, x) * 180 / math.Pi
+	return math.Mod(brng+360, 360)
 }
 
 // calculateTotalDistance sums up historical coordinates distance
@@ -584,6 +694,12 @@ func pollGarmin() {
 		}
 
 		if !isDuplicate {
+			var heading float64 = 0.0
+			if len(store.History) > 0 {
+				prevPt := store.History[len(store.History)-1]
+				heading = calculateBearing(prevPt.Lat, prevPt.Lng, p.Lat, p.Lng)
+			}
+			p.Coordinate.Heading = heading
 			store.History = append(store.History, p.Coordinate)
 			updated = true
 		}
@@ -882,14 +998,14 @@ func saveStoreLocked() error {
 	}
 
 	// Insert history
-	stmt, err := tx.Prepare("INSERT INTO history (lng, lat, timestamp, velocity, battery, weather) VALUES (?, ?, ?, ?, ?, ?)")
+	stmt, err := tx.Prepare("INSERT INTO history (lng, lat, timestamp, velocity, battery, weather, heading) VALUES (?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 
 	for _, pt := range store.History {
-		_, err = stmt.Exec(pt.Lng, pt.Lat, pt.Timestamp.Format(time.RFC3339), pt.Velocity, pt.Battery, pt.Weather)
+		_, err = stmt.Exec(pt.Lng, pt.Lat, pt.Timestamp.Format(time.RFC3339), pt.Velocity, pt.Battery, pt.Weather, pt.Heading)
 		if err != nil {
 			return err
 		}
@@ -943,7 +1059,7 @@ func reloadStoreLocked() error {
 	}
 
 	// Read history
-	rows, err := db.Query("SELECT lng, lat, timestamp, velocity, battery, weather FROM history ORDER BY id ASC")
+	rows, err := db.Query("SELECT lng, lat, timestamp, velocity, battery, weather, heading FROM history ORDER BY id ASC")
 	if err != nil {
 		return err
 	}
@@ -953,11 +1069,15 @@ func reloadStoreLocked() error {
 	for rows.Next() {
 		var pt Coordinate
 		var tsStr string
-		err := rows.Scan(&pt.Lng, &pt.Lat, &tsStr, &pt.Velocity, &pt.Battery, &pt.Weather)
+		var heading sql.NullFloat64
+		err := rows.Scan(&pt.Lng, &pt.Lat, &tsStr, &pt.Velocity, &pt.Battery, &pt.Weather, &heading)
 		if err != nil {
 			return err
 		}
 		pt.Timestamp, _ = time.Parse(time.RFC3339, tsStr)
+		if heading.Valid {
+			pt.Heading = heading.Float64
+		}
 		store.History = append(store.History, pt)
 	}
 

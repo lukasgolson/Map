@@ -1,62 +1,91 @@
-// Project Dino-Transit (v1.0)
-// Frontend Controller, Custom Polyline Snap Engine, Particle Canvas, & Web Audio Jukebox
+import { 
+  getWrappedLatLng as wrapLatLng, 
+  getWrappedLatLngs as wrapLatLngs, 
+  getDistanceKM, 
+  snapToTransitAngles, 
+  getBezierSplinePoints 
+} from './map-utils.js';
 
-let map;
-let trackPolyline;
-let avatarMarker;
-let pollInterval;
-let baseTileLayer;
-let goalMarker = null;
-let currentTileUrl = '';
+import {
+  isMusicPlaying,
+  isSFXEnabled,
+  initAudioContext,
+  playStartupChime,
+  toggleMusic,
+  toggleSFX,
+  stopAllSynths,
+  updateAudioVibe,
+  playSFX,
+  modulateMusicByWeather,
+  setAudioState
+} from './audio.js';
 
-// Extrapolation and smoothing variables
-let targetAvatarLatLng = null;
-let visualAvatarLatLng = null;
-let extrapolationPolyline = null;
-let pollIntervalSeconds = 600; // default 10 minutes
-let lastUpdateClientTime = null;
-let previousUpdateClientTime = null;
-let gpsTimeScale = 1.0;
-let lastExtrapolatedLatLng = null;
-let isFollowingDino = true;
-let isZooming = false;
-let pendingUpdateMap = false;
-let trackDots = [];
+import {
+  resizeCanvas,
+  animateParticles,
+  setWeatherState
+} from './weather.js';
 
-// State data cache
+// Core State Variables
+let pollIntervalSeconds = 30; // Will be synced dynamically from config
+let pollInterval = null;
 let currentData = {
   currentState: 'disconnected',
   history: [],
   weather: 'clear',
   batteryLevel: 100,
   highScore: 0,
-  statusText: 'Initializing...'
+  statusText: 'Connecting to Dino Tracker...'
 };
 
-// Canvas & Particle System Settings
-const canvas = document.getElementById('weather-canvas');
-const ctx = canvas.getContext('2d');
-let particles = [];
-let animationFrameId;
+let map = null;
+let routeGeoJsonLayer = null;
+let trackPolyline = null;
+let trackDots = [];
+let avatarMarker = null;
+let goalMarker = null;
+let isZooming = false;
+let pendingUpdateMap = false;
 
-// Audio Jukebox Settings
-let audioCtx = null;
-let masterFilter = null;
-let isMusicPlaying = true; // Enabled by default!
-let isSFXEnabled = true;
-let currentVibe = null; // 'paddling', 'camping', 'skeleton'
-let synthNodes = {}; // Container for oscillators/gain nodes
-let audioTimer = null; // Sequencer timer reference
+// Gliding & Extrapolation State
+let visualAvatarLatLng = null;
+let extrapolatedTargetLatLng = null;
+let isFollowingDino = true;
 
-// Dev Panel Settings
+// Dev Overrides Settings
 let devStateOverride = 'auto';
 let devTimeOverride = 'auto';
 let devWeatherOverride = 'auto';
-let lastLightningTime = 0;
-let lightningFlashIntensity = 0;
+
+// Extrapolation calibration
+let previousUpdateClientTime = null;
+let lastUpdateClientTime = null;
+let gpsTimeScale = 1.0;
+
+function getWrappedLatLng(latlng) {
+  return wrapLatLng(map, latlng);
+}
+
+function getWrappedLatLngs(latlngs) {
+  return wrapLatLngs(map, latlngs);
+}
+
+function getApiUrl(path) {
+  if (window.location.protocol === 'file:') {
+    return 'http://localhost:8080' + path;
+  }
+  return path;
+}
 
 // Initialize Dashboard
 document.addEventListener('DOMContentLoaded', () => {
+  // Register Service Worker for PWA capability
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register(getApiUrl('/sw.js'))
+      .then(reg => console.log('Service Worker registered successfully with scope:', reg.scope))
+      .catch(err => console.error('Service Worker registration failed:', err));
+  }
+
   initMap();
   resizeCanvas();
   window.addEventListener('resize', () => {
@@ -66,8 +95,11 @@ document.addEventListener('DOMContentLoaded', () => {
   
   // Set default button UI state to ON since it is enabled by default
   const btn = document.getElementById('music-toggle');
-  btn.className = 'neon-btn play';
-  document.getElementById('music-label').textContent = 'MUSIC: ON';
+  if (btn) {
+    btn.className = 'neon-btn play';
+    const label = document.getElementById('music-label');
+    if (label) label.textContent = 'MUSIC: ON';
+  }
 
   // Initialize follow button state
   updateFollowButtonUI();
@@ -82,90 +114,9 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // Setup dev panel overrides
-  const devToggleBtn = document.getElementById('dev-toggle');
-  const devPanel = document.getElementById('dev-panel');
-  const devStateSelect = document.getElementById('dev-state');
-  const devTimeSelect = document.getElementById('dev-time');
-  const devWeatherSelect = document.getElementById('dev-weather');
-  
-  devToggleBtn.addEventListener('click', () => {
-    devPanel.classList.toggle('hidden');
-    devToggleBtn.classList.toggle('play'); // glowing toggle effect
-  });
-  
-  devStateSelect.addEventListener('change', (e) => {
-    devStateOverride = e.target.value;
-    triggerOverrideUpdate();
-  });
-  
-  devTimeSelect.addEventListener('change', (e) => {
-    devTimeOverride = e.target.value;
-    triggerOverrideUpdate();
-  });
-
-  devWeatherSelect.addEventListener('change', (e) => {
-    devWeatherOverride = e.target.value;
-    triggerOverrideUpdate();
-  });
-
-  const devFeedSelect = document.getElementById('dev-feed');
-  const devPeriodSelect = document.getElementById('dev-period');
-  const devResetRouteBtn = document.getElementById('dev-reset-route');
-
-  if (devFeedSelect) {
-    devFeedSelect.addEventListener('change', (e) => {
-      const useTestServer = e.target.value === 'test';
-      toggleResetRouteButton(useTestServer);
-      updateSettings(useTestServer, parseInt(devPeriodSelect.value, 10));
-    });
-  }
-
-  if (devPeriodSelect) {
-    devPeriodSelect.addEventListener('change', (e) => {
-      const useTestServer = devFeedSelect.value === 'test';
-      const seconds = parseInt(e.target.value, 10);
-      updateSettings(useTestServer, seconds);
-    });
-  }
-
-  if (devResetRouteBtn) {
-    devResetRouteBtn.addEventListener('click', () => {
-      fetch('/api/v1/test/reset', { method: 'POST' })
-        .then(response => response.json())
-        .then(data => {
-          console.log('Test route reset:', data);
-          fetchData();
-        })
-        .catch(err => console.error('Error resetting test route:', err));
-    });
-  }
-
-  const devResetBtn = document.getElementById('dev-reset');
-  devResetBtn.addEventListener('click', () => {
-    devStateOverride = 'auto';
-    devTimeOverride = 'auto';
-    devWeatherOverride = 'auto';
-    
-    devStateSelect.value = 'auto';
-    devTimeSelect.value = 'auto';
-    devWeatherSelect.value = 'auto';
-    
-    if (devFeedSelect) devFeedSelect.value = 'live';
-    if (devPeriodSelect) devPeriodSelect.value = '600';
-    toggleResetRouteButton(false);
-    updateSettings(false, 600);
-    
-    triggerOverrideUpdate();
-  });
-
-  // Set up polling
-  fetchData();
-  pollInterval = setInterval(fetchData, 60000); // Default fallback interval
-  fetchSettings();
-  
-  // Setup music toggle listener
-  btn.addEventListener('click', toggleMusic);
+  // Bind settings/music toggles to audio engine
+  const musicBtn = document.getElementById('music-toggle');
+  if (musicBtn) musicBtn.addEventListener('click', toggleMusic);
   
   // Setup interactive control SFX bindings
   document.querySelectorAll('button, select').forEach(elem => {
@@ -179,56 +130,40 @@ document.addEventListener('DOMContentLoaded', () => {
   
   // Setup SFX toggle listener
   const sfxBtn = document.getElementById('sfx-toggle');
-  sfxBtn.addEventListener('click', toggleSFX);
-  
-  // Start particle animation loop
-  animateParticles();
+  if (sfxBtn) sfxBtn.addEventListener('click', toggleSFX);
 
-  // Retro double square-wave power-up sound (like Game Boy start!)
-  function playStartupChime() {
-    const time = audioCtx.currentTime;
-    const lead1 = audioCtx.createOscillator();
-    const lead2 = audioCtx.createOscillator();
-    const gain = audioCtx.createGain();
-    
-    lead1.type = 'square';
-    lead1.frequency.setValueAtTime(370, time); // F#4
-    lead1.frequency.setValueAtTime(740, time + 0.08); // F#5
-    
-    lead2.type = 'square';
-    lead2.frequency.setValueAtTime(440, time + 0.08); // A4
-    lead2.frequency.setValueAtTime(880, time + 0.16); // A5
-    
-    gain.gain.setValueAtTime(0.015, time);
-    gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.8);
-    
-    lead1.connect(gain);
-    lead2.connect(gain);
-    gain.connect(audioCtx.destination);
-    
-    lead1.start(time);
-    lead1.stop(time + 0.85);
-    lead2.start(time);
-    lead2.stop(time + 0.85);
+  // Dev panel open/close toggle
+  const devToggleBtn = document.getElementById('dev-toggle');
+  const devPanel = document.getElementById('dev-panel');
+  if (devToggleBtn && devPanel) {
+    // Check backend capability: retrieve dev panel toggle setting
+    fetch(getApiUrl('/api/v1/dashboard'))
+      .then(res => res.json())
+      .then(data => {
+        if (data.enableDevPanel) {
+          devToggleBtn.style.display = 'flex';
+        } else {
+          devToggleBtn.style.display = 'none';
+          devPanel.classList.add('hidden');
+        }
+      })
+      .catch(() => {
+        devToggleBtn.style.display = 'flex'; // fallback
+      });
+
+    devToggleBtn.addEventListener('click', () => {
+      devPanel.classList.toggle('hidden');
+      devToggleBtn.classList.toggle('play'); // glowing toggle effect
+    });
   }
+  
+  // Start particle weather animation loop
+  animateParticles();
 
   // One-time global interaction listener to unlock Web Audio context and fade out splash screen
   const splash = document.getElementById('splash-screen');
   const startAudioOnSplash = () => {
-    if (!audioCtx) {
-      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    }
-    if (!masterFilter) {
-      masterFilter = audioCtx.createBiquadFilter();
-      masterFilter.type = 'lowpass';
-      masterFilter.frequency.setValueAtTime(20000, audioCtx.currentTime);
-      masterFilter.connect(audioCtx.destination);
-    }
-    if (audioCtx.state === 'suspended') {
-      audioCtx.resume();
-    }
-    
-    // Play retro Game Boy start sound
+    initAudioContext();
     playStartupChime();
     
     // Fade out and remove splash screen
@@ -244,15 +179,28 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     
     // Clean up event listeners
+    if (splash) {
+      splash.removeEventListener('click', startAudioOnSplash);
+      splash.removeEventListener('touchend', startAudioOnSplash);
+    }
     document.removeEventListener('keydown', startAudioOnSplash, true);
-    document.removeEventListener('touchstart', startAudioOnSplash, true);
+    document.removeEventListener('touchend', startAudioOnSplash, true);
   };
 
   if (splash) {
     splash.addEventListener('click', startAudioOnSplash);
+    splash.addEventListener('touchend', startAudioOnSplash);
   }
   document.addEventListener('keydown', startAudioOnSplash, true);
-  document.addEventListener('touchstart', startAudioOnSplash, true);
+  document.addEventListener('touchend', startAudioOnSplash, true);
+
+  // Sync state with audio and weather modules
+  setAudioState(currentData, devTimeOverride, pollIntervalSeconds);
+  setWeatherState(map, avatarMarker, currentData, devTimeOverride);
+
+  // Start polling immediately
+  fetchSettings();
+  fetchData();
 
   // Start avatar animation loop
   requestAnimationFrame(animateAvatar);
@@ -260,7 +208,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // 1. Map Initialization
 function initMap() {
-  // Center map on Vancouver by default, will re-center to latest coordinates once loaded
   map = L.map('map', {
     zoomControl: false,
     boxZoom: false,
@@ -268,36 +215,146 @@ function initMap() {
     scrollWheelZoom: true,
     minZoom: 3,
     maxZoom: 18
-  }).setView([49.236816, -123.125818], 13);
-
-  baseTileLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png', {
-    maxZoom: 18,
-    minZoom: 3,
-    noWrap: false,
-    subdomains: 'abcd',
-    attribution: 'CartoDB'
+  }).setView([55.8000, -97.9000], 8);
+  
+  const isNight = isNightTime();
+  const themeUrl = isNight 
+    ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
+    : 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager_nolabels/{z}/{x}/{y}{r}.png';
+    
+  L.tileLayer(themeUrl, {
+    maxZoom: 20
   }).addTo(map);
 
-  map.on('move', updateMapPositionWrapping);
-  map.on('zoomstart', () => {
-    isZooming = true;
-  });
-  map.on('zoomend', () => {
-    isZooming = false;
-    updateMapPositionWrapping();
+  map.on('zoomstart', () => { isZooming = true; });
+  map.on('zoomend', () => { 
+    isZooming = false; 
     updateZoomLevelDisplay();
     if (pendingUpdateMap) {
       pendingUpdateMap = false;
       updateMap();
     }
   });
-  map.on('dragstart', () => {
-    isFollowingDino = false;
-    updateFollowButtonUI();
+
+  // Goal waterfall marker in Vancouver
+  const waterfall = L.latLng(49.2568, -123.1238);
+  
+  const flagIcon = L.divIcon({
+    html: getGoalFlagSVG(),
+    className: 'goal-marker-flag',
+    iconSize: [48, 48],
+    iconAnchor: [12, 42]
   });
   
+  goalMarker = L.marker(waterfall, { icon: flagIcon }).addTo(map);
+  
+  // Custom popup
+  goalMarker.bindPopup(`
+    <div style="font-family: var(--font-retro); font-size: 9px; color: #fff; background: #222; padding: 6px; border: 2px solid var(--neon-cyan); border-radius: 4px; box-shadow: 0 0 10px var(--neon-cyan);">
+      <div style="color: var(--neon-cyan); font-weight: bold; margin-bottom: 4px;">GOAL REACHED</div>
+      Dino waterfall sanctuary! Safe and sound.
+    </div>
+  `, {
+    closeButton: false,
+    offset: L.point(0, -32)
+  });
+
+  // Thompson and Winnipeg real Manitoba markers
+  const winnipeg = L.latLng(49.8951, -97.1384);
+  const thompson = L.latLng(55.7433, -97.8553);
+  const goalLatLng = L.latLng(56.0653, -98.2004);
+  
+  const shelterIcon = L.divIcon({
+    html: `
+      <svg width="32" height="32" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" style="image-rendering: pixelated; width: 100%; height: 100%;">
+        <polygon points="16,4 4,16 28,16" fill="#ff5500" stroke="#7a2200" stroke-width="1.5"/>
+        <rect x="7" y="16" width="18" height="12" fill="#555555" stroke="#333333" stroke-width="1.5"/>
+        <rect x="14" y="20" width="4" height="8" fill="#111111"/>
+      </svg>
+    `,
+    className: 'shelter-marker-icon',
+    iconSize: [32, 32],
+    iconAnchor: [16, 28]
+  });
+  
+  const shelterMarker = L.marker(thompson, { icon: shelterIcon }).addTo(map);
+  shelterMarker.bindPopup(`
+    <div style="font-family: var(--font-retro); font-size: 8px; color: #fff; background: #222; padding: 4px; border: 1.5px solid var(--neon-orange); border-radius: 4px;">
+      <div style="color: var(--neon-orange); font-weight: bold; margin-bottom: 2px;">STATION: THOMPSON</div>
+      Supply caches and shelter.
+    </div>
+  `, { closeButton: false, offset: L.point(0, -22) });
+
+  const winnipegIcon = L.divIcon({
+    html: `
+      <svg width="32" height="32" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" style="image-rendering: pixelated; width: 100%; height: 100%;">
+        <rect x="6" y="6" width="20" height="20" fill="#39ff14" stroke="#1d8f07" stroke-width="1.5"/>
+        <text x="16" y="20" font-family="monospace" font-size="14" font-weight="bold" fill="#000" text-anchor="middle">W</text>
+      </svg>
+    `,
+    className: 'winnipeg-marker-icon',
+    iconSize: [32, 32],
+    iconAnchor: [16, 28]
+  });
+
+  const winnipegMarker = L.marker(winnipeg, { icon: winnipegIcon }).addTo(map);
+  winnipegMarker.bindPopup(`
+    <div style="font-family: var(--font-retro); font-size: 8px; color: #fff; background: #222; padding: 4px; border: 1.5px solid var(--neon-green); border-radius: 4px;">
+      <div style="color: var(--neon-green); font-weight: bold; margin-bottom: 2px;">START: WINNIPEG</div>
+      Expedition departure point.
+    </div>
+  `, { closeButton: false, offset: L.point(0, -22) });
+
+  const waterfallIcon = L.divIcon({
+    html: `
+      <svg width="32" height="32" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" style="image-rendering: pixelated; width: 100%; height: 100%;">
+        <!-- Cliff/rocks -->
+        <rect x="2" y="16" width="10" height="12" fill="#555" stroke="#333" stroke-width="1.5"/>
+        <rect x="20" y="16" width="10" height="12" fill="#555" stroke="#333" stroke-width="1.5"/>
+        <!-- Water stream -->
+        <rect x="12" y="8" width="8" height="20" fill="#00f3ff"/>
+        <!-- Foam/splash -->
+        <rect x="10" y="24" width="12" height="4" fill="#fff"/>
+      </svg>
+    `,
+    className: 'waterfall-marker-icon',
+    iconSize: [32, 32],
+    iconAnchor: [16, 28]
+  });
+  
+  const waterfallMarker = L.marker(goalLatLng, { icon: waterfallIcon }).addTo(map);
+  waterfallMarker.bindPopup(`
+    <div style="font-family: var(--font-retro); font-size: 8px; color: #fff; background: #222; padding: 4px; border: 1.5px solid var(--neon-cyan); border-radius: 4px;">
+      <div style="color: var(--neon-cyan); font-weight: bold; margin-bottom: 2px;">GOAL: KAPAKAYTAY FALLS</div>
+      Final expedition destination.
+    </div>
+  `, { closeButton: false, offset: L.point(0, -22) });
+
   updateTheme();
   updateZoomLevelDisplay();
+  loadRouteGeoJson();
+}
+
+function loadRouteGeoJson() {
+  fetch(getApiUrl('/route.geojson'))
+    .then(response => response.json())
+    .then(data => {
+      routeGeoJsonLayer = L.geoJSON(data, {
+        style: function () {
+          const isNight = isNightTime();
+          return {
+            color: isNight ? '#555555' : '#888888',
+            weight: 4,
+            opacity: 0.6,
+            dashArray: '5, 5'
+          };
+        }
+      }).addTo(map);
+      routeGeoJsonLayer.bringToBack();
+    })
+    .catch(err => {
+      console.warn("Failed to load route.geojson:", err);
+    });
 }
 
 function updateZoomLevelDisplay() {
@@ -309,170 +366,103 @@ function updateZoomLevelDisplay() {
 
 function updateTheme() {
   const isNight = isNightTime();
-  const targetUrl = isNight 
-    ? 'https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png'
-    : 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager_nolabels/{z}/{x}/{y}.png';
-    
-  if (currentTileUrl !== targetUrl) {
-    currentTileUrl = targetUrl;
-    if (baseTileLayer) {
-      baseTileLayer.setUrl(targetUrl);
-    }
-  }
+  document.body.classList.toggle('light-theme', !isNight);
   
-  if (isNight) {
-    document.body.classList.remove('light-theme');
-    document.body.classList.add('dark-theme');
-  } else {
-    document.body.classList.remove('dark-theme');
-    document.body.classList.add('light-theme');
-  }
-}
-
-function getCurrentTimeOfDayVibe() {
-  let localHour = new Date().getHours();
-  
-  if (devTimeOverride === 'morning') {
-    localHour = 8; // force 8 AM
-  } else if (devTimeOverride === 'afternoon') {
-    localHour = 14; // force 2 PM
-  } else if (devTimeOverride === 'evening') {
-    localHour = 20; // force 8 PM
-  } else if (devTimeOverride === 'latenight') {
-    localHour = 2; // force 2 AM
-  } else if (currentData.history && currentData.history.length > 0) {
-    const latest = currentData.history[currentData.history.length - 1];
-    const offsetHours = Math.round(latest.lng / 15.0);
-    const localDate = new Date(new Date().getTime() + (offsetHours * 3600000));
-    localHour = localDate.getUTCHours();
-  }
-  
-  if (localHour >= 6 && localHour < 12) {
-    return {
-      name: 'morning',
-      leadVoices: ['sine', 'triangle'],
-      chordType: 'major',
-      drumMute: false,
-      bassVolume: 0.04,
-      leadProb: 0.35,
-    };
-  } else if (localHour >= 12 && localHour < 18) {
-    return {
-      name: 'afternoon',
-      leadVoices: ['square', 'triangle'],
-      chordType: 'major',
-      drumMute: false,
-      bassVolume: 0.07,
-      leadProb: 0.25,
-    };
-  } else if (localHour >= 18 && localHour < 24) {
-    return {
-      name: 'evening',
-      leadVoices: ['sine'],
-      chordType: 'minor',
-      drumMute: true,
-      bassVolume: 0.03,
-      leadProb: 0.20,
-    };
-  } else {
-    return {
-      name: 'latenight',
-      leadVoices: ['sine'],
-      chordType: 'minor',
-      drumMute: true,
-      bassVolume: 0.015,
-      leadProb: 0.12,
-    };
-  }
-}
-
-function getWrappedLatLng(latlng) {
-  if (!map) return latlng;
-  const centerLng = map.getCenter().lng;
-  const diff = centerLng - latlng.lng;
-  const wraps = Math.round(diff / 360.0);
-  return L.latLng(latlng.lat, latlng.lng + (wraps * 360.0));
-}
-
-function getWrappedLatLngs(latlngs) {
-  if (latlngs.length === 0) return [];
-  const centerLng = map.getCenter().lng;
-  const latest = latlngs[latlngs.length - 1];
-  const diff = centerLng - latest.lng;
-  const wraps = Math.round(diff / 360.0);
-  const shift = wraps * 360.0;
-  if (shift === 0) return latlngs;
-  return latlngs.map(latlng => L.latLng(latlng.lat, latlng.lng + shift));
-}
-
-function updateMapPositionWrapping() {
-  if (!map) return;
-  if (avatarMarker) {
-    avatarMarker.setLatLng(getWrappedLatLng(avatarMarker.getLatLng()));
-  }
-  if (goalMarker) {
-    goalMarker.setLatLng(getWrappedLatLng(goalMarker.getLatLng()));
-  }
-  if (trackPolyline) {
-    trackPolyline.setLatLngs(getWrappedLatLngs(trackPolyline.getLatLngs()));
-  }
-  if (trackDots && trackDots.length > 0) {
-    trackDots.forEach(dot => {
-      dot.setLatLng(getWrappedLatLng(dot.getLatLng()));
+  if (map) {
+    const themeUrl = isNight 
+      ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
+      : 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager_nolabels/{z}/{x}/{y}{r}.png';
+      
+    map.eachLayer(layer => {
+      if (layer instanceof L.TileLayer) {
+        layer.setUrl(themeUrl);
+      }
     });
   }
+  
+  if (routeGeoJsonLayer) {
+    routeGeoJsonLayer.setStyle({
+      color: isNight ? '#555555' : '#888888'
+    });
+  }
+
+  // Update neon style colors dynamically based on Time of Day to give the HUD unique tints
+  updateThemeColors();
 }
 
-// 2. Custom Polyline Snap Engine (Transit Map 45/90 angles)
-function snapToTransitAngles(coords) {
-  if (coords.length === 0) return [];
+function updateThemeColors() {
+  const root = document.documentElement;
   
-  const snapped = [];
-  // Seed the first coordinate
-  snapped.push(L.latLng(coords[0].lat, coords[0].lng));
-  
-  for (let i = 1; i < coords.length; i++) {
-    const prev = snapped[i - 1];
-    const curr = coords[i];
-    
-    // Calculate deltas in degrees
-    let dx = curr.lng - prev.lng;
-    let dy = curr.lat - prev.lat;
-    
-    let snappedLng = curr.lng;
-    let snappedLat = curr.lat;
-    
-    const absDx = Math.abs(dx);
-    const absDy = Math.abs(dy);
-    
-    // Snap logic:
-    // If delta x is much larger than delta y, force horizontal (lat stays same)
-    if (absDx > 2.2 * absDy) {
-      snappedLat = prev.lat;
-    } 
-    // If delta y is much larger than delta x, force vertical (lng stays same)
-    else if (absDy > 2.2 * absDx) {
-      snappedLng = prev.lng;
-    } 
-    // Otherwise force 45 degree angle (step size is the average)
-    else {
-      const step = (absDx + absDy) / 2;
-      snappedLng = prev.lng + step * Math.sign(dx);
-      snappedLat = prev.lat + step * Math.sign(dy);
+  let timeOfDay = 'afternoon';
+  if (devTimeOverride !== 'auto') {
+    timeOfDay = devTimeOverride;
+  } else if (currentData && currentData.history && currentData.history.length > 0) {
+    const latestPt = currentData.history[currentData.history.length - 1];
+    const offsetHours = Math.round(latestPt.lng / 15.0);
+    const localDate = new Date(new Date().getTime() + (offsetHours * 3600000));
+    const hours = localDate.getUTCHours();
+    if (hours >= 5 && hours < 12) {
+      timeOfDay = 'morning';
+    } else if (hours >= 12 && hours < 17) {
+      timeOfDay = 'afternoon';
+    } else if (hours >= 17 && hours < 21) {
+      timeOfDay = 'evening';
+    } else {
+      timeOfDay = 'latenight';
     }
-    
-    snapped.push(L.latLng(snappedLat, snappedLng));
   }
-  
-  return snapped;
+
+  const isLightTheme = document.body.classList.contains('light-theme');
+
+  if (isLightTheme) {
+    // Light theme variants (Burnt/Aged parchment theme)
+    if (timeOfDay === 'morning') {
+      root.style.setProperty('--neon-orange', '#b85a00'); // softer gold orange
+      root.style.setProperty('--neon-cyan', '#0b6c7c'); // teal
+      root.style.setProperty('--neon-pink', '#9a0c4f');
+    } else if (timeOfDay === 'afternoon') {
+      root.style.setProperty('--neon-orange', '#a03c00'); // default burnt orange
+      root.style.setProperty('--neon-cyan', '#0b6c7c');
+      root.style.setProperty('--neon-pink', '#9a0c4f');
+    } else if (timeOfDay === 'evening') {
+      root.style.setProperty('--neon-orange', '#9c2400'); // reddish golden hour
+      root.style.setProperty('--neon-cyan', '#512b70'); // purple twilight
+      root.style.setProperty('--neon-pink', '#9a0c4f');
+    } else {
+      // latenight light theme
+      root.style.setProperty('--neon-orange', '#5c1b6f');
+      root.style.setProperty('--neon-cyan', '#004d61'); // dark deep blue
+      root.style.setProperty('--neon-pink', '#8a063b');
+    }
+  } else {
+    // Dark theme variants (Glow/CRT theme)
+    if (timeOfDay === 'morning') {
+      root.style.setProperty('--neon-orange', '#ff8800'); // soft bright gold
+      root.style.setProperty('--neon-cyan', '#ffd700'); // amber gold
+      root.style.setProperty('--neon-pink', '#ff44aa'); // soft rose
+    } else if (timeOfDay === 'afternoon') {
+      root.style.setProperty('--neon-orange', '#ff5500'); // neon orange
+      root.style.setProperty('--neon-cyan', '#00f3ff'); // electric cyan
+      root.style.setProperty('--neon-pink', '#ff007f'); // cyber pink
+    } else if (timeOfDay === 'evening') {
+      root.style.setProperty('--neon-orange', '#e23d28'); // warm flame
+      root.style.setProperty('--neon-cyan', '#8a2be2'); // violet twilight
+      root.style.setProperty('--neon-pink', '#ff1493'); // fluorescent magenta
+    } else {
+      // latenight
+      root.style.setProperty('--neon-orange', '#6200ea'); // midnight violet
+      root.style.setProperty('--neon-cyan', '#0d47a1'); // deep cobalt blue
+      root.style.setProperty('--neon-pink', '#880e4f'); // dark plum
+    }
+  }
 }
 
 // 3. Main Polling & Data Update
 function fetchData() {
-  fetch('/api/v1/dashboard')
+  fetch(getApiUrl('/api/v1/dashboard'))
     .then(response => response.json())
     .then(data => {
-      // If dev state is overridden, apply it to the incoming data
+      // If dev state is overridden, apply it
       if (devStateOverride !== 'auto') {
         data.currentState = devStateOverride;
         if (devStateOverride === 'paddling') {
@@ -486,12 +476,10 @@ function fetchData() {
         }
       }
       
-      // If dev weather is overridden, apply it to the incoming data
       if (devWeatherOverride !== 'auto') {
         data.weather = devWeatherOverride;
       }
       
-      // Check if history updated
       let historyUpdated = false;
       const oldHistory = currentData.history || [];
       const newHistory = data.history || [];
@@ -519,7 +507,6 @@ function fetchData() {
           const lastPt = newHistory[newHistory.length - 1];
           const prevPt = newHistory[newHistory.length - 2];
           
-          // Calculate gpsTimeScale if we have previous client update times
           if (oldLastClientTime !== null && previousUpdateClientTime !== null) {
             const clientTimeDiff = now - oldLastClientTime;
             const gpsTimeDiff = new Date(lastPt.timestamp).getTime() - new Date(prevPt.timestamp).getTime();
@@ -528,7 +515,6 @@ function fetchData() {
               console.log(`Updated GPS time scale to ${gpsTimeScale.toFixed(2)} (GPS: ${gpsTimeDiff}ms, Client: ${clientTimeDiff}ms)`);
             }
           } else {
-            // Default scale setup
             const devFeedSelect = document.getElementById('dev-feed');
             const useTestServer = devFeedSelect && devFeedSelect.value === 'test';
             if (useTestServer) {
@@ -538,19 +524,15 @@ function fetchData() {
             }
           }
           
-          // Check for drastic snaps (e.g. reset or teleporter)
-          if (lastExtrapolatedLatLng) {
-            const errLat = lastPt.lat - lastExtrapolatedLatLng.lat;
-            const errLng = lastPt.lng - lastExtrapolatedLatLng.lng;
+          if (data.extrapolatedTarget && visualAvatarLatLng) {
+            const errLat = lastPt.lat - visualAvatarLatLng.lat;
+            const errLng = lastPt.lng - visualAvatarLatLng.lng;
             const jumpDist = Math.sqrt(errLat * errLat + errLng * errLng);
             if (jumpDist > 0.05) {
-              // Reset scale and snap position immediately
               gpsTimeScale = 1.0;
-              if (visualAvatarLatLng) {
-                const snappedList = snapToTransitAngles(newHistory);
-                if (snappedList.length > 0) {
-                  visualAvatarLatLng = getWrappedLatLng(snappedList[snappedList.length - 1]);
-                }
+              const snappedList = snapToTransitAngles(newHistory);
+              if (snappedList.length > 0) {
+                visualAvatarLatLng = getWrappedLatLng(snappedList[snappedList.length - 1]);
               }
             }
           }
@@ -558,6 +540,17 @@ function fetchData() {
       }
       
       currentData = data;
+      
+      // Update pre-computed server extrapolation target
+      if (currentData.extrapolatedTarget && currentData.currentState === 'paddling') {
+        extrapolatedTargetLatLng = L.latLng(currentData.extrapolatedTarget.lat, currentData.extrapolatedTarget.lng);
+      } else {
+        extrapolatedTargetLatLng = null;
+      }
+      
+      setAudioState(currentData, devTimeOverride, pollIntervalSeconds);
+      setWeatherState(map, avatarMarker, currentData, devTimeOverride);
+
       updateUI();
       updateMap();
       updateAudioVibe(currentData.currentState);
@@ -565,7 +558,11 @@ function fetchData() {
     .catch(err => {
       console.error('Error fetching dashboard data:', err);
       if (devStateOverride === 'auto') {
-        document.getElementById('ticker-text').textContent = 'Connection Error. Retrying...';
+        const statusEl = document.getElementById('telemetry-status');
+        if (statusEl) {
+          statusEl.textContent = 'OFFLINE (Fetch Failed)';
+          statusEl.style.color = 'var(--neon-pink)';
+        }
       }
     });
 }
@@ -635,84 +632,30 @@ function updateUI() {
   if (progressBarEl) {
     progressBarEl.style.width = progressPercent + '%';
   }
-  
-  // Battery indicators
-  const batteryPercent = currentData.batteryLevel;
-  const batteryValEl = document.getElementById('battery-val');
-  if (batteryValEl) {
-    batteryValEl.textContent = batteryPercent + '%';
-  }
-  const batteryBar = document.getElementById('battery-bar');
-  if (batteryBar) {
-    batteryBar.style.width = batteryPercent + '%';
-    
-    // Set battery bar colors based on level
-    if (batteryPercent > 50) {
-      batteryBar.style.backgroundColor = '#39ff14';
-      batteryBar.style.boxShadow = '0 0 8px #39ff14';
-    } else if (batteryPercent > 20) {
-      batteryBar.style.backgroundColor = '#ffaa00';
-      batteryBar.style.boxShadow = '0 0 8px #ffaa00';
+
+  const stateVal = document.getElementById('telemetry-state');
+  if (stateVal) {
+    stateVal.textContent = currentData.currentState.toUpperCase();
+    if (currentData.currentState === 'paddling') {
+      stateVal.style.color = 'var(--neon-green)';
+    } else if (currentData.currentState === 'camping') {
+      stateVal.style.color = 'var(--neon-orange)';
+    } else if (currentData.currentState === 'resting') {
+      stateVal.style.color = 'var(--neon-cyan)';
     } else {
-      batteryBar.style.backgroundColor = '#ff0055';
-      batteryBar.style.boxShadow = '0 0 8px #ff0055';
+      stateVal.style.color = 'var(--neon-pink)';
     }
   }
-  
-  // Determine dynamic render state based on time of day
-  let renderState = currentData.currentState;
-  const isNight = isNightTime();
-  if (renderState === 'resting' || renderState === 'camping') {
-    renderState = isNight ? 'camping' : 'resting';
+
+  const statusVal = document.getElementById('telemetry-status');
+  if (statusVal) {
+    statusVal.textContent = currentData.statusText;
+    statusVal.style.color = '';
   }
-  
-  // Status badges
-  const stateBadge = document.getElementById('status-badge');
-  if (stateBadge) {
-    stateBadge.className = 'status-badge';
-    if (renderState === 'paddling') {
-      stateBadge.textContent = 'PADDLING';
-      stateBadge.classList.add('status-paddling');
-    } else if (renderState === 'camping') {
-      stateBadge.textContent = 'SLEEPING';
-      stateBadge.classList.add('status-camping');
-    } else if (renderState === 'resting') {
-      stateBadge.textContent = 'LAZING';
-      stateBadge.classList.add('status-resting');
-    } else {
-      stateBadge.textContent = 'OFFLINE';
-      stateBadge.classList.add('status-disconnected');
-    }
-  }
-  
-  // Update ticker status text dynamically if not custom overridden
-  let statusText = currentData.statusText;
-  if (devStateOverride === 'auto') {
-    if (currentData.currentState === 'resting' || currentData.currentState === 'camping') {
-      statusText = isNight 
-        ? "Sleeping soundly under the stars. Zzz..."
-        : "Lazing around in a hammock. Enjoying the sunshine.";
-    }
-  }
-  
-  // Update floating telemetry stats
+
   updateTelemetry();
-  
-  // Toggle cloudy overlay
-  const cloudyOverlay = document.getElementById('cloudy-overlay');
-  if (cloudyOverlay) {
-    if (currentData.weather === 'cloudy' || currentData.weather === 'rainy' || currentData.weather === 'stormy' || currentData.weather === 'snowy') {
-      cloudyOverlay.classList.add('active');
-    } else {
-      cloudyOverlay.classList.remove('active');
-    }
-  }
-  
-  // Modulate music filter based on weather
-  modulateMusicByWeather();
-  
-  // Ticker text
-  typewriterEffect(statusText);
+  updateBatteryUI(currentData.batteryLevel);
+  updateTheme();
 }
 
 function updateTelemetry() {
@@ -853,8 +796,7 @@ function updateTelemetry() {
 }
 
 function calculateTodayDistance(history) {
-  if (history.length < 2) return 0;
-  // Get calendar day of the latest point
+  if (!history || history.length < 2) return 0;
   const latestDate = new Date(history[history.length - 1].timestamp).toDateString();
   
   let dist = 0;
@@ -862,7 +804,6 @@ function calculateTodayDistance(history) {
     const pDate = new Date(history[i].timestamp).toDateString();
     const nDate = new Date(history[i+1].timestamp).toDateString();
     
-    // If both points fall on today's calendar day
     if (pDate === latestDate && nDate === latestDate) {
       dist += getDistanceKM(history[i], history[i+1]);
     }
@@ -870,29 +811,8 @@ function calculateTodayDistance(history) {
   return dist;
 }
 
-// Simple typewriter simulation for ticker tape
-let currentTextTimeout = null;
-function typewriterEffect(text) {
-  const elem = document.getElementById('ticker-text');
-  if (elem.textContent === text) return;
-  
-  if (currentTextTimeout) clearTimeout(currentTextTimeout);
-  
-  let i = 0;
-  elem.textContent = '';
-  
-  function type() {
-    if (i < text.length) {
-      elem.textContent += text.charAt(i);
-      i++;
-      currentTextTimeout = setTimeout(type, 30);
-    }
-  }
-  type();
-}
-
 function calculateTotalDistance(history) {
-  if (history.length < 2) return 0;
+  if (!history || history.length < 2) return 0;
   let total = 0;
   for (let i = 0; i < history.length - 1; i++) {
     total += getDistanceKM(history[i], history[i+1]);
@@ -900,19 +820,53 @@ function calculateTotalDistance(history) {
   return total;
 }
 
-function getDistanceKM(c1, c2) {
-  const R = 6371; // Earth radius
-  const dLat = (c2.lat - c1.lat) * Math.PI / 180;
-  const dLon = (c2.lng - c1.lng) * Math.PI / 180;
-  const a = Math.sin(dLat/2)*Math.sin(dLat/2) +
-            Math.cos(c1.lat*Math.PI/180)*Math.cos(c2.lat*Math.PI/180)*
-            Math.sin(dLon/2)*Math.sin(dLon/2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-  return R * c;
+function updateBatteryUI(level) {
+  const percentText = document.getElementById('battery-percent');
+  if (percentText) {
+    percentText.textContent = level + '%';
+  }
+  
+  const bar = document.getElementById('battery-bar');
+  if (bar) {
+    bar.style.width = level + '%';
+    if (level <= 20) {
+      bar.style.backgroundColor = 'var(--neon-pink)';
+      bar.style.boxShadow = '0 0 8px var(--neon-pink)';
+    } else if (level <= 50) {
+      bar.style.backgroundColor = 'var(--neon-orange)';
+      bar.style.boxShadow = '0 0 8px var(--neon-orange)';
+    } else {
+      bar.style.backgroundColor = 'var(--neon-green)';
+      bar.style.boxShadow = '0 0 8px var(--neon-green)';
+    }
+  }
+}
+
+function updateMapPositionWrapping() {
+  if (!map) return;
+  if (avatarMarker) {
+    avatarMarker.setLatLng(getWrappedLatLng(avatarMarker.getLatLng()));
+  }
+  if (goalMarker) {
+    goalMarker.setLatLng(getWrappedLatLng(goalMarker.getLatLng()));
+  }
+  if (trackPolyline) {
+    trackPolyline.setLatLngs(getWrappedLatLngs(trackPolyline.getLatLngs()));
+  }
+  if (trackDots && trackDots.length > 0) {
+    trackDots.forEach(dot => {
+      dot.setLatLng(getWrappedLatLng(dot.getLatLng()));
+    });
+  }
 }
 
 // 4. Map Updates
 function updateMap() {
+  if (!map || !map._loaded) {
+    pendingUpdateMap = true;
+    return;
+  }
+
   if (isZooming) {
     pendingUpdateMap = true;
     return;
@@ -920,1102 +874,340 @@ function updateMap() {
 
   if (currentData.history.length === 0) return;
   
-  // Snap actual history coordinates to transit angles
   const snappedLatLngs = snapToTransitAngles(currentData.history);
   const wrappedLatLngs = getWrappedLatLngs(snappedLatLngs);
+  const smoothedLatLngs = getBezierSplinePoints(wrappedLatLngs);
   
-  // Draw / Update thick neon polyline (actual history)
+  // Draw / Update traveled polyline
   if (trackPolyline) {
-    trackPolyline.setLatLngs(wrappedLatLngs);
+    trackPolyline.setLatLngs(smoothedLatLngs);
   } else {
-    trackPolyline = L.polyline(wrappedLatLngs, {
-      color: '#ff5500', // Neon transit orange
+    trackPolyline = L.polyline(smoothedLatLngs, {
+      color: '#ff5500',
       weight: 6,
       opacity: 0.9,
-      lineJoin: 'miter',
-      lineCap: 'square',
+      lineJoin: 'round',
+      lineCap: 'round',
       shadowColor: '#ff5500',
       shadowBlur: 10
     }).addTo(map);
   }
-
-  // Clear any existing track dots
+  
+  // Clean up old grid station dots
   trackDots.forEach(dot => map.removeLayer(dot));
   trackDots = [];
-
-  // Group consecutive history points at the same location (consecutive visits)
-  const groups = [];
-  if (wrappedLatLngs.length > 0) {
-    let currentGroup = {
-      latlng: wrappedLatLngs[0],
-      indices: [0]
-    };
+  
+  // Plot snap grid station dots on map route snap points
+  const dotColor = isNightTime() ? '#00f3ff' : '#00a3ab';
+  wrappedLatLngs.forEach((latlng, idx) => {
+    const isLast = (idx === wrappedLatLngs.length - 1);
+    const radius = isLast ? 8 : 5;
     
-    for (let i = 1; i < wrappedLatLngs.length; i++) {
-      const startIdx = currentGroup.indices[0];
-      const startPt = currentData.history[startIdx];
-      const currPt = currentData.history[i];
-      
-      const startLatLng = wrappedLatLngs[startIdx];
-      const currLatLng = wrappedLatLngs[i];
-      
-      // Check if snapped coordinates are identical
-      const sameSnappedLoc = startLatLng.lat === currLatLng.lat && startLatLng.lng === currLatLng.lng;
-      
-      // Check raw GPS error buffer: within 100 meters (0.1 km)
-      const rawDist = getDistanceKM(startPt, currPt);
-      const withinBuffer = rawDist < 0.1;
-      
-      // Check date match: same calendar day
-      const dateStart = new Date(startPt.timestamp);
-      const dateCurr = new Date(currPt.timestamp);
-      const sameDay = dateStart.getFullYear() === dateCurr.getFullYear() &&
-                      dateStart.getMonth() === dateCurr.getMonth() &&
-                      dateStart.getDate() === dateCurr.getDate();
-                      
-      if (sameSnappedLoc && withinBuffer && sameDay) {
-        currentGroup.indices.push(i);
-      } else {
-        groups.push(currentGroup);
-        currentGroup = {
-          latlng: currLatLng,
-          indices: [i]
-        };
-      }
-    }
-    groups.push(currentGroup);
-  }
-
-  // Draw glowing transit-style pellets at each unique coordinate group
-  groups.forEach(group => {
-    let marker;
-    let tooltipHtml = '';
-
-    if (group.indices.length === 1) {
-      const idx = group.indices[0];
-      const pt = currentData.history[idx];
-      const dateStr = new Date(pt.timestamp).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
-      const timeStr = new Date(pt.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      tooltipHtml = `GPS Update #${idx + 1}<br>${dateStr} ${timeStr}`;
-
-      const customIcon = L.divIcon({
-        className: 'track-pellet-single-icon',
-        html: `<div class="track-pellet-single"></div>`,
-        iconSize: [10, 10],
-        iconAnchor: [5, 5]
-      });
-
-      marker = L.marker(group.latlng, {
-        icon: customIcon,
-        pane: 'markerPane'
-      });
-    } else {
-      tooltipHtml = `GPS Updates (${group.indices.length} points at this location):<br>`;
-      group.indices.forEach(idx => {
-        const pt = currentData.history[idx];
-        const dateStr = new Date(pt.timestamp).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
-        const timeStr = new Date(pt.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-        tooltipHtml += `• #${idx + 1}: ${dateStr} ${timeStr}<br>`;
-      });
-
-      const customIcon = L.divIcon({
-        className: 'track-pellet-mult-icon',
-        html: `<div class="track-pellet-mult">${group.indices.length}</div>`,
-        iconSize: [20, 20],
-        iconAnchor: [10, 10]
-      });
-
-      marker = L.marker(group.latlng, {
-        icon: customIcon,
-        pane: 'markerPane'
-      });
-    }
-
-    marker.bindTooltip(tooltipHtml, {
-      className: 'retro-tooltip',
-      direction: 'top'
+    const dot = L.circleMarker(latlng, {
+      radius: radius,
+      fillColor: isLast ? 'transparent' : dotColor,
+      fillOpacity: isLast ? 0 : 0.9,
+      color: dotColor,
+      weight: 3,
+      opacity: 1.0
+    }).addTo(map);
+    
+    // Station tooltip popup
+    dot.bindTooltip(`
+      GPS POINT ${idx + 1}<br/>
+      Time: ${new Date(currentData.history[idx].timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+    `, {
+      direction: 'top',
+      offset: L.point(0, -5),
+      className: 'retro-tooltip'
     });
-
-    marker.addTo(map);
-    trackDots.push(marker);
+    
+    trackDots.push(dot);
   });
   
-  // Latest coordinate
   const latestCoord = getWrappedLatLng(snappedLatLngs[snappedLatLngs.length - 1]);
   
-  // Determine if it is night time
-  const isNight = isNightTime();
-  
-  // Create / Update avatar marker using procedural SVGs
-  let svgHtml = '';
-  let bobbingClass = '';
-  let iconSize = [48, 48];
-  let iconAnchor = [24, 24];
-  
-  let renderState = currentData.currentState;
-  if (renderState === 'resting' || renderState === 'camping') {
-    renderState = isNight ? 'camping' : 'resting';
+  // Trigger paddle splash SFX when a new GPS snap point is appended to path
+  if (currentData.history.length > 1 && isSFXEnabled) {
+    playSFX('paddle');
   }
-  
-  if (renderState === 'paddling') {
-    svgHtml = getCanoeSVG();
-    bobbingClass = 'bobbing-loop';
-    iconSize = [64, 48];
-    iconAnchor = [32, 32];
-  } else if (renderState === 'camping') {
-    svgHtml = getTwoTentsSVG();
-    bobbingClass = 'flicker-loop';
-    iconSize = [72, 48];
-    iconAnchor = [36, 32];
-  } else if (renderState === 'resting') {
-    svgHtml = getRestingHammockSVG();
-    bobbingClass = 'bobbing-loop';
-    iconSize = [72, 48];
-    iconAnchor = [36, 32];
-  } else {
-    svgHtml = getDisconnectedDinoSVG();
-    bobbingClass = 'flicker-loop';
-    iconSize = [54, 48];
-    iconAnchor = [27, 38];
+
+  // Create or place avatar sprite marker on map
+  let iconHtml = getCanoeSVG();
+  if (currentData.currentState === 'camping') {
+    iconHtml = getTwoTentsSVG(isNightTime());
+  } else if (currentData.currentState === 'resting') {
+    iconHtml = getRestingHammockSVG();
+  } else if (currentData.currentState === 'disconnected') {
+    iconHtml = getDisconnectedDinoSVG();
   }
   
   const customIcon = L.divIcon({
-    className: 'pixel-avatar-marker',
-    html: `<div class="${bobbingClass}" style="width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;">${svgHtml}</div>`,
-    iconSize: iconSize,
-    iconAnchor: iconAnchor
+    html: iconHtml,
+    className: 'dino-avatar-marker-div',
+    iconSize: [64, 48],
+    iconAnchor: [32, 28]
   });
-  
-  if (avatarMarker) {
-    avatarMarker.setIcon(customIcon);
-  } else {
+
+  if (!avatarMarker) {
     visualAvatarLatLng = latestCoord;
-    targetAvatarLatLng = latestCoord;
     avatarMarker = L.marker(visualAvatarLatLng, { icon: customIcon }).addTo(map);
-    
-    // Center map on latest point on initial load
-    map.setView(latestCoord, map.getZoom(), { animate: false });
+    map.setView(visualAvatarLatLng, 13);
+  } else {
+    avatarMarker.setIcon(customIcon);
   }
+  
+  setWeatherState(map, avatarMarker, currentData, devTimeOverride);
 
-  // Update Goal flag marker if coordinates are set
-  if (currentData.goalLatitude && currentData.goalLongitude) {
-    const goalLatLng = getWrappedLatLng(L.latLng(currentData.goalLatitude, currentData.goalLongitude));
-    const goalTitle = currentData.goalTitle || 'Goal Destination';
-    
-    const goalIcon = L.divIcon({
-      className: 'goal-marker',
-      html: `<div class="bobbing-loop" style="width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;">${getGoalFlagSVG()}</div>`,
-      iconSize: [48, 48],
-      iconAnchor: [12, 44]
+  // Pan the camera immediately to the character if follow is enabled
+  if (isFollowingDino && visualAvatarLatLng) {
+    map.setView(visualAvatarLatLng, map.getZoom());
+  }
+  
+  modulateMusicByWeather();
+}
+
+function isNightTime() {
+  if (devTimeOverride === 'night' || devTimeOverride === 'evening' || devTimeOverride === 'latenight') return true;
+  if (devTimeOverride === 'day' || devTimeOverride === 'morning' || devTimeOverride === 'afternoon') return false;
+  
+  const now = new Date();
+  let localHour = now.getHours();
+  
+  if (currentData.history && currentData.history.length > 0) {
+    const latest = currentData.history[currentData.history.length - 1];
+    const offsetHours = Math.round(latest.lng / 15.0);
+    const localDate = new Date(now.getTime() + (offsetHours * 3600000));
+    localHour = localDate.getUTCHours();
+  }
+  
+  return localHour >= 18 || localHour < 6;
+}
+
+// 5. Procedural 8-bit SVG Sprite Drawings
+function getGoalFlagSVG() {
+  return `
+    <svg width="48" height="48" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg" style="image-rendering: pixelated; width: 100%; height: 100%;">
+      <rect x="10" y="4" width="4" height="40" fill="#aaaaaa"/>
+      <rect x="8" y="42" width="8" height="2" fill="#888888"/>
+      
+      <rect x="14" y="6" width="6" height="6" fill="#ffffff"/>
+      <rect x="20" y="6" width="6" height="6" fill="#000000"/>
+      <rect x="26" y="6" width="6" height="6" fill="#ffffff"/>
+      <rect x="32" y="6" width="6" height="6" fill="#000000"/>
+      <rect x="14" y="12" width="6" height="6" fill="#000000"/>
+      <rect x="20" y="12" width="6" height="6" fill="#ffffff"/>
+      <rect x="26" y="12" width="6" height="6" fill="#000000"/>
+      <rect x="32" y="12" width="6" height="6" fill="#ffffff"/>
+      <rect x="14" y="18" width="6" height="6" fill="#ffffff"/>
+      <rect x="20" y="18" width="6" height="6" fill="#000000"/>
+      <rect x="26" y="18" width="6" height="6" fill="#ffffff"/>
+      <rect x="32" y="18" width="6" height="6" fill="#000000"/>
+      
+      <rect x="14" y="24" width="24" height="2" fill="#ff0055"/>
+      <g transform="translate(4, 36)">
+         <rect x="0" y="0" width="2" height="2" fill="#39ff14"/>
+         <rect x="1" y="1" width="2" height="2" fill="#39ff14"/>
+         <rect x="2" y="0" width="2" height="2" fill="#39ff14"/>
+      </g>
+      <g transform="translate(18, 38)">
+         <rect x="0" y="0" width="2" height="2" fill="#2ad10d"/>
+         <rect x="1" y="1" width="2" height="2" fill="#2ad10d"/>
+         <rect x="2" y="0" width="2" height="2" fill="#2ad10d"/>
+      </g>
+    </svg>
+  `;
+}
+
+function getCanoeSVG() {
+  return `
+    <svg width="64" height="48" viewBox="0 0 64 48" xmlns="http://www.w3.org/2000/svg" style="image-rendering: pixelated; width: 100%; height: 100%;">
+      <g transform="translate(6, 4)">
+        <rect x="6" y="0" width="8" height="6" fill="#39ff14"/>
+        <rect x="12" y="2" width="2" height="2" fill="#000"/>
+        <rect x="2" y="6" width="10" height="12" fill="#39ff14"/>
+        <rect x="4" y="18" width="2" height="4" fill="#32c710"/>
+        <rect x="8" y="18" width="2" height="4" fill="#32c710"/>
+        <rect x="0" y="10" width="2" height="6" fill="#39ff14"/>
+        <rect x="10" y="12" width="4" height="2" fill="#39ff14"/>
+      </g>
+      <g transform="translate(38, 6)">
+        <rect x="6" y="0" width="8" height="6" fill="#2ad10d"/>
+        <rect x="12" y="2" width="2" height="2" fill="#000"/>
+        <rect x="2" y="6" width="10" height="12" fill="#2ad10d"/>
+        <rect x="4" y="18" width="2" height="4" fill="#209c09"/>
+        <rect x="8" y="18" width="2" height="4" fill="#209c09"/>
+        <rect x="0" y="10" width="2" height="6" fill="#2ad10d"/>
+        <rect x="10" y="12" width="4" height="2" fill="#2ad10d"/>
+      </g>
+      <path d="M 6,32 C 14,44 50,44 58,32 L 55,26 C 46,30 18,30 9,26 Z" fill="#b05d2e" stroke="#5a2c16" stroke-width="2"/>
+      <line x1="12" y1="26" x2="4" y2="42" stroke="#ffcc00" stroke-width="3" stroke-linecap="round"/>
+      <line x1="48" y1="28" x2="56" y2="44" stroke="#ffcc00" stroke-width="3" stroke-linecap="round"/>
+      <rect x="3" y="31" width="2" height="2" fill="#00f3ff"/>
+      <rect x="59" y="31" width="2" height="2" fill="#00f3ff"/>
+    </svg>
+  `;
+}
+
+function getTwoTentsSVG(isNight) {
+  const fireMarkup = isNight ? `
+        <polygon points="5,-9 1,-1 9,-1" fill="#ff3300"/>
+        <polygon points="5,-5 3,0 7,0" fill="#ffcc00"/>
+  ` : '';
+  return `
+    <svg width="72" height="48" viewBox="0 0 72 48" xmlns="http://www.w3.org/2000/svg" style="image-rendering: pixelated; width: 100%; height: 100%;">
+      <g transform="translate(4, 4)">
+        <polygon points="20,12 6,36 34,36" fill="#005757" stroke="#002d2d" stroke-width="2"/>
+        <polygon points="20,12 20,36 34,36" fill="#008080"/>
+        <polygon points="20,22 14,36 26,36" fill="#111"/>
+      </g>
+      <g transform="translate(36, 8)">
+        <polygon points="20,12 6,36 34,36" fill="#007d7d" stroke="#004747" stroke-width="2"/>
+        <polygon points="20,12 20,36 34,36" fill="#00acac"/>
+        <polygon points="20,22 14,36 26,36" fill="#181818"/>
+      </g>
+      <g transform="translate(30, 36)">
+        <line x1="0" y1="4" x2="10" y2="0" stroke="#5c2c16" stroke-width="2.5"/>
+        <line x1="1" y1="0" x2="9" y2="4" stroke="#5c2c16" stroke-width="2.5"/>
+        ${fireMarkup}
+      </g>
+    </svg>
+  `;
+}
+
+function getRestingHammockSVG() {
+  return `
+    <svg width="72" height="48" viewBox="0 0 72 48" xmlns="http://www.w3.org/2000/svg" style="image-rendering: pixelated; width: 100%; height: 100%;">
+      <g transform="translate(0, 0)">
+        <g transform="translate(2, 2)">
+          <rect x="7" y="10" width="3" height="28" fill="#8d4a1f"/>
+          <polygon points="8,10 0,4 6,7" fill="#1b850a"/>
+          <polygon points="8,10 16,4 10,7" fill="#1b850a"/>
+        </g>
+        <g transform="translate(22, 2)">
+          <rect x="7" y="10" width="3" height="28" fill="#8d4a1f"/>
+          <polygon points="8,10 0,4 6,7" fill="#1b850a"/>
+          <polygon points="8,10 16,4 10,7" fill="#1b850a"/>
+        </g>
+        <path d="M 10,24 Q 20,33 30,24" stroke="#d5601a" stroke-width="2.5" fill="none"/>
+        <g transform="translate(14, 16)">
+          <rect x="0" y="4" width="2" height="6" fill="#39ff14"/>
+          <rect x="2" y="2" width="12" height="8" fill="#39ff14"/>
+          <rect x="10" y="-1" width="5" height="5" fill="#39ff14"/>
+          <rect x="11" y="0" width="4" height="2" fill="#000"/>
+        </g>
+      </g>
+      <g transform="translate(36, 0)">
+        <g transform="translate(2, 2)">
+          <rect x="7" y="10" width="3" height="28" fill="#8d4a1f"/>
+          <polygon points="8,10 0,4 6,7" fill="#1b850a"/>
+          <polygon points="8,10 16,4 10,7" fill="#1b850a"/>
+        </g>
+        <g transform="translate(22, 2)">
+          <rect x="7" y="10" width="3" height="28" fill="#8d4a1f"/>
+          <polygon points="8,10 0,4 6,7" fill="#1b850a"/>
+          <polygon points="8,10 16,4 10,7" fill="#1b850a"/>
+        </g>
+        <path d="M 10,24 Q 20,33 30,24" stroke="#007d7d" stroke-width="2.5" fill="none"/>
+        <g transform="translate(14, 16)">
+          <rect x="0" y="4" width="2" height="6" fill="#2ad10d"/>
+          <rect x="2" y="2" width="12" height="8" fill="#2ad10d"/>
+          <rect x="10" y="-1" width="5" height="5" fill="#2ad10d"/>
+          <rect x="11" y="0" width="4" height="2" fill="#ff0000"/>
+        </g>
+      </g>
+    </svg>
+  `;
+}
+
+function getDisconnectedDinoSVG() {
+  return `
+    <svg width="54" height="48" viewBox="0 0 54 48" xmlns="http://www.w3.org/2000/svg" style="image-rendering: pixelated; width: 100%; height: 100%;">
+      <g transform="translate(6, 12)">
+        <rect x="6" y="0" width="10" height="8" fill="#39ff14"/>
+        <rect x="8" y="2" width="2" height="2" fill="#000"/>
+        <rect x="0" y="8" width="12" height="14" fill="#39ff14"/>
+        <rect x="2" y="22" width="3" height="4" fill="#32c710"/>
+        <rect x="7" y="22" width="3" height="4" fill="#32c710"/>
+        <path d="M 0,14 L -4,18 L -4,20 Z" fill="#39ff14"/>
+        <rect x="12" y="10" width="2" height="4" fill="#39ff14"/>
+        <rect x="12" y="8" width="8" height="6" fill="#ffffff" stroke="#aaaaaa" stroke-width="1"/>
+        <rect x="14" y="10" width="4" height="2" fill="#8d4a1f"/>
+      </g>
+      <g transform="translate(36, 14)">
+        <rect x="5" y="6" width="2" height="24" fill="#888888"/>
+        <rect x="2" y="28" width="8" height="2" fill="#888888"/>
+        <path d="M 0,8 C 0,16 12,16 12,8" stroke="#aaaaaa" stroke-width="2.5" fill="none"/>
+        <circle cx="6" cy="1" r="3.5" fill="#ff0055" class="flicker-loop"/>
+      </g>
+      <g transform="translate(24, 38)">
+        <rect x="0" y="0" width="2" height="2" fill="#2ad10d"/>
+        <rect x="3" y="1" width="2" height="2" fill="#2ad10d"/>
+        <rect x="6" y="0" width="2" height="2" fill="#2ad10d"/>
+      </g>
+      <circle cx="3" cy="3" r="1" fill="#ff0055" opacity="0.3"/>
+    </svg>
+  `;
+}
+
+// 6. Test Settings Helpers
+function fetchSettings() {
+  fetch(getApiUrl('/api/v1/settings'))
+    .then(response => response.json())
+    .then(settings => {
+      const devFeedSelect = document.getElementById('dev-feed');
+      const devPeriodSelect = document.getElementById('dev-period');
+      
+      if (devFeedSelect) {
+        devFeedSelect.value = settings.use_test_server ? 'test' : 'live';
+        toggleResetRouteButton(settings.use_test_server);
+      }
+      
+      pollIntervalSeconds = settings.poll_interval_seconds || 30;
+      if (devPeriodSelect) {
+        devPeriodSelect.value = pollIntervalSeconds;
+      }
+      
+      // Update audio context settings
+      setAudioState(currentData, devTimeOverride, pollIntervalSeconds);
+      
+      if (pollInterval) clearInterval(pollInterval);
+      pollInterval = setInterval(fetchData, pollIntervalSeconds * 1000);
+      fetchData();
+    })
+    .catch(err => {
+      console.warn("Failed to fetch settings from server, using local defaults:", err);
+      if (pollInterval) clearInterval(pollInterval);
+      pollInterval = setInterval(fetchData, pollIntervalSeconds * 1000);
+      fetchData();
     });
-    
-    if (goalMarker) {
-      goalMarker.setLatLng(goalLatLng);
-      goalMarker.setIcon(goalIcon);
-    } else {
-      goalMarker = L.marker(goalLatLng, { icon: goalIcon }).addTo(map);
-      goalMarker.bindTooltip(goalTitle, {
-        permanent: true,
-        direction: 'top',
-        className: 'retro-tooltip'
-      });
-    }
-  }
 }
 
-// 5. Canvas Particles Layer (Weather & Campfire Smoke)
-function resizeCanvas() {
-  canvas.width = window.innerWidth;
-  canvas.height = window.innerHeight;
-}
-
-class Particle {
-  constructor(type, customX, customY) {
-    this.type = type; // 'rain', 'snow', 'smoke', 'cloud'
-    this.reset(customX, customY);
-  }
-  
-  reset(customX, customY) {
-    this.x = customX !== undefined ? customX : Math.random() * canvas.width;
-    this.y = customY !== undefined ? customY : (this.type === 'smoke' ? customY : -10);
+function updateSettingsOnServer(useTestServer, pollSecs) {
+  fetch(getApiUrl('/api/v1/settings'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      use_test_server: useTestServer,
+      poll_interval_seconds: parseInt(pollSecs)
+    })
+  })
+  .then(response => response.json())
+  .then(settings => {
+    console.log("Settings successfully updated on server:", settings);
+    pollIntervalSeconds = settings.poll_interval_seconds || 30;
     
-    if (this.type === 'rain') {
-      this.size = Math.random() * 2 + 1;
-      this.speedY = Math.random() * 10 + 12;
-      this.speedX = -Math.random() * 3 - 2; // wind blow left
-      this.length = Math.random() * 12 + 8;
-      this.color = 'rgba(0, 243, 255, 0.4)';
-    } else if (this.type === 'snow') {
-      this.size = Math.random() * 3 + 2; // pixel snow
-      this.speedY = Math.random() * 2 + 1;
-      this.speedX = Math.random() * 1.5 - 0.5; // slow drift
-      this.color = 'rgba(255, 255, 255, 0.7)';
-    } else if (this.type === 'smoke') {
-      this.x = customX;
-      this.y = customY;
-      this.size = Math.random() * 4 + 2;
-      this.speedY = -Math.random() * 1.5 - 0.8;
-      this.speedX = Math.random() * 1.2 - 0.6;
-      this.alpha = 0.8;
-      this.fade = Math.random() * 0.015 + 0.008;
-      this.color = 'rgba(180, 180, 180, ';
-    } else if (this.type === 'cloud') {
-      this.x = -150;
-      this.y = Math.random() * (canvas.height * 0.3) + 20;
-      this.size = Math.random() * 30 + 30; // width
-      this.speedX = Math.random() * 0.4 + 0.1;
-      this.color = 'rgba(80, 80, 95, 0.2)';
-    }
-  }
-  
-  update(markerPos) {
-    if (this.type === 'smoke') {
-      this.x += this.speedX;
-      this.y += this.speedY;
-      this.alpha -= this.fade;
-      if (this.alpha <= 0) {
-        // Respawn at campfire location
-        if (markerPos) {
-          this.reset(markerPos.x, markerPos.y);
-        } else {
-          this.alpha = 0;
-        }
-      }
-    } else {
-      this.x += this.speedX;
-      this.y += this.speedY;
-      
-      // Boundaries
-      if (this.y > canvas.height || this.x < 0 || this.x > canvas.width) {
-        this.reset();
-      }
-    }
-  }
-  
-  draw() {
-    const isNight = isNightTime();
-    let renderColor = this.color;
-    
-    if (this.type === 'rain') {
-      renderColor = isNight ? 'rgba(0, 243, 255, 0.4)' : 'rgba(11, 108, 124, 0.5)';
-    } else if (this.type === 'snow') {
-      renderColor = isNight ? 'rgba(255, 255, 255, 0.7)' : 'rgba(100, 120, 140, 0.4)';
-    } else if (this.type === 'smoke') {
-      const smokeBase = isNight ? '180, 180, 180, ' : '80, 75, 65, ';
-      renderColor = 'rgba(' + smokeBase + this.alpha + ')';
-    } else if (this.type === 'cloud') {
-      renderColor = isNight ? 'rgba(80, 80, 95, 0.2)' : 'rgba(120, 110, 90, 0.15)';
-    }
-    
-    ctx.fillStyle = renderColor;
-    
-    if (this.type === 'rain') {
-      ctx.fillRect(this.x, this.y, this.size, this.length);
-    } else if (this.type === 'snow') {
-      ctx.fillRect(this.x, this.y, this.size, this.size);
-    } else if (this.type === 'smoke') {
-      ctx.fillRect(this.x, this.y, this.size, this.size);
-    } else if (this.type === 'cloud') {
-      // Draw pixel cloud block
-      ctx.fillRect(this.x, this.y, this.size, 10);
-      ctx.fillRect(this.x + 10, this.y - 6, this.size - 20, 6);
-      ctx.fillRect(this.x + 20, this.y + 10, this.size - 30, 4);
-    }
-  }
-}
-
-// Render loop for weather canvas
-function animateParticles() {
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  
-  // Find marker pixel position for campfire smoke
-  let markerScreenPos = null;
-  if (avatarMarker && map) {
-    const latlng = avatarMarker.getLatLng();
-    markerScreenPos = map.latLngToContainerPoint(latlng);
-  }
-  
-  // Decide particle numbers based on weather and state
-  const targetCount = { rain: 0, snow: 0, smoke: 0, cloud: 0 };
-  
-  if (currentData.weather === 'rainy' || currentData.weather === 'stormy') {
-    targetCount.rain = currentData.weather === 'stormy' ? 120 : 60;
-  } else if (currentData.weather === 'snowy') {
-    targetCount.snow = 50;
-  } else if (currentData.weather === 'cloudy') {
-    targetCount.cloud = 3;
-  }
-  
-  if (currentData.currentState === 'camping') {
-    targetCount.smoke = 25;
-  }
-  
-  // Maintain particle pools
-  updateParticlePool('rain', targetCount.rain);
-  updateParticlePool('snow', targetCount.snow);
-  updateParticlePool('cloud', targetCount.cloud);
-  
-  // Smoke requires specific spawn coordinates
-  if (currentData.currentState === 'camping' && markerScreenPos) {
-    updateParticlePool('smoke', targetCount.smoke, markerScreenPos.x, markerScreenPos.y);
-  } else {
-    // Kill smoke particles if not camping
-    particles = particles.filter(p => p.type !== 'smoke');
-  }
-  
-  // Stormy Lightning flash
-  if (currentData.weather === 'stormy') {
-    const now = Date.now();
-    // Cooldown of 15 seconds, and a low probability (0.001) per frame once cooldown passes (approx. every 30-40s average)
-    if (now - lastLightningTime > 15000 && Math.random() < 0.001) {
-      lastLightningTime = now;
-      lightningFlashIntensity = 0.85;
-      
-      // Delay thunder by the speed of sound relative to distance (0.6s to 1.8s delay)
-      const delay = 600 + Math.random() * 1200;
-      setTimeout(() => {
-        playSFX('thunder');
-      }, delay);
-    }
-  }
-  
-  if (lightningFlashIntensity > 0) {
-    ctx.fillStyle = `rgba(255, 255, 255, ${lightningFlashIntensity})`;
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    lightningFlashIntensity -= 0.08; // smooth decay over ~10 frames
-  }
-  
-  // Update and draw particles
-  particles.forEach(p => {
-    p.update(markerScreenPos);
-    p.draw();
+    // Reset client-side polling timer interval to match server
+    if (pollInterval) clearInterval(pollInterval);
+    pollInterval = setInterval(fetchData, pollIntervalSeconds * 1000);
+  })
+  .catch(err => {
+    console.error("Error saving settings on server:", err);
   });
-  
-  animationFrameId = requestAnimationFrame(animateParticles);
 }
 
-function updateParticlePool(type, targetAmt, spawnX, spawnY) {
-  const currentCount = particles.filter(p => p.type === type).length;
-  
-  if (currentCount < targetAmt) {
-    // Add particles
-    for (let i = 0; i < (targetAmt - currentCount); i++) {
-      particles.push(new Particle(type, spawnX, spawnY));
-    }
-  } else if (currentCount > targetAmt) {
-    // Remove excess
-    let removed = 0;
-    particles = particles.filter(p => {
-      if (p.type === type && removed < (currentCount - targetAmt)) {
-        removed++;
-        return false;
-      }
-      return true;
-    });
-  }
-}
-
-// 6. Procedural Lo-Fi Jukebox (Web Audio API)
-function toggleMusic() {
-  const btn = document.getElementById('music-toggle');
-  
-  if (!audioCtx) {
-    // Initialize Web Audio Context
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  }
-  
-  if (audioCtx.state === 'suspended') {
-    audioCtx.resume();
-  }
-  
-  // If music is enabled by default but hasn't started yet, play it!
-  if (isMusicPlaying && !currentVibe) {
-    updateAudioVibe(currentData.currentState);
-    return;
-  }
-  
-  if (!isMusicPlaying) {
-    isMusicPlaying = true;
-    btn.className = 'neon-btn play';
-    document.getElementById('music-label').textContent = 'MUSIC: ON';
-    // Initialize music synthesis for current state
-    currentVibe = null; // force initialization
-    updateAudioVibe(currentData.currentState);
-  } else {
-    isMusicPlaying = false;
-    btn.className = 'neon-btn mute';
-    document.getElementById('music-label').textContent = 'MUSIC: OFF';
-    // Suspend sound generation
-    stopAllSynths();
-  }
-}
-
-function stopAllSynths() {
-  if (audioTimer) {
-    clearTimeout(audioTimer);
-    audioTimer = null;
-  }
-  Object.keys(synthNodes).forEach(key => {
-    if (synthNodes[key]) {
-      try {
-        synthNodes[key].forEach(node => {
-          if (node.stop) node.stop();
-          if (node.disconnect) node.disconnect();
-        });
-      } catch (e) {}
-    }
-  });
-  synthNodes = {};
-  currentVibe = null;
-}
-
-function updateAudioVibe(state, forceRestart = false) {
-  if (!isMusicPlaying || !audioCtx) return;
-  if (currentVibe === state && !forceRestart) return; // Vibe already correct
-  
-  // Transition vibe!
-  stopAllSynths();
-  currentVibe = state;
-  
-  if (state === 'paddling') {
-    playPaddlingVibe();
-  } else if (state === 'camping') {
-    playCampingVibe();
-  } else if (state === 'resting') {
-    playRestingVibe();
-  } else {
-    // disconnected
-    playDisconnectedVibe();
-  }
-}
-
-function connectToOutput(node) {
-  if (masterFilter) {
-    node.connect(masterFilter);
-  } else {
-    node.connect(audioCtx.destination);
-  }
-}
-
-// Helper: Create a short White Noise Buffer
-function createNoiseBuffer(durationSeconds) {
-  const bufferSize = audioCtx.sampleRate * durationSeconds;
-  const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
-  const data = buffer.getChannelData(0);
-  for (let i = 0; i < bufferSize; i++) {
-    data[i] = Math.random() * 2 - 1;
-  }
-  return buffer;
-}
-
-// Synthesis Helper: Play a retro chiptune Kick
-var kickVolume = 0.25;
-function playKick(time) {
-  const osc = audioCtx.createOscillator();
-  const gain = audioCtx.createGain();
-  
-  osc.connect(gain);
-  connectToOutput(gain);
-  
-  osc.frequency.setValueAtTime(140, time);
-  osc.frequency.exponentialRampToValueAtTime(0.01, time + 0.1);
-  
-  gain.gain.setValueAtTime(kickVolume, time);
-  gain.gain.exponentialRampToValueAtTime(0.001, time + 0.12);
-  
-  osc.start(time);
-  osc.stop(time + 0.15);
-}
-
-// Synthesis Helper: Play a retro chiptune Snare
-var snareVolume = 0.08;
-function playSnare(time) {
-  const noise = audioCtx.createBufferSource();
-  noise.buffer = createNoiseBuffer(0.15);
-  
-  const filter = audioCtx.createBiquadFilter();
-  filter.type = 'bandpass';
-  filter.frequency.setValueAtTime(900, time);
-  filter.Q.setValueAtTime(2.0, time);
-  
-  const gain = audioCtx.createGain();
-  gain.gain.setValueAtTime(snareVolume, time);
-  gain.gain.exponentialRampToValueAtTime(0.001, time + 0.12);
-  
-  noise.connect(filter);
-  filter.connect(gain);
-  connectToOutput(gain);
-  
-  noise.start(time);
-  noise.stop(time + 0.15);
-}
-
-// Synthesis Helper: Play a low chiptune Bass note
-function playBass(freq, time, duration) {
-  const osc = audioCtx.createOscillator();
-  const gain = audioCtx.createGain();
-  
-  osc.type = 'triangle';
-  osc.frequency.setValueAtTime(freq, time);
-  
-  gain.gain.setValueAtTime(0.10, time);
-  gain.gain.exponentialRampToValueAtTime(0.001, time + duration - 0.02);
-  
-  osc.connect(gain);
-  connectToOutput(gain);
-  
-  osc.start(time);
-  osc.stop(time + duration);
-}
-
-// Synthesis Helper: Play a warm chiptune Rhodes pad chord note
-function playPadNote(freq, time, duration) {
-  const osc = audioCtx.createOscillator();
-  const gain = audioCtx.createGain();
-  const filter = audioCtx.createBiquadFilter();
-  
-  osc.type = 'triangle';
-  osc.frequency.setValueAtTime(freq, time);
-  osc.detune.setValueAtTime((Math.random() - 0.5) * 8, time);
-  
-  filter.type = 'lowpass';
-  filter.frequency.setValueAtTime(450, time);
-  
-  gain.gain.setValueAtTime(0, time);
-  gain.gain.linearRampToValueAtTime(0.02, time + 0.15); // soft swell
-  gain.gain.exponentialRampToValueAtTime(0.001, time + duration);
-  
-  osc.connect(filter);
-  filter.connect(gain);
-  connectToOutput(gain);
-  
-  osc.start(time);
-  osc.stop(time + duration);
-}
-
-// Synthesis Helper: Play a cute chiptune lead melody note
-function playLeadNote(freq, time, duration, waveType) {
-  const osc = audioCtx.createOscillator();
-  const gain = audioCtx.createGain();
-  const filter = audioCtx.createBiquadFilter();
-  
-  osc.type = waveType || 'square';
-  osc.frequency.setValueAtTime(freq, time);
-  
-  filter.type = 'lowpass';
-  filter.frequency.setValueAtTime(1000, time);
-  
-  // Vibrato LFO
-  const lfo = audioCtx.createOscillator();
-  const lfoGain = audioCtx.createGain();
-  lfo.frequency.setValueAtTime(6.0, time); // 6 Hz vibrato
-  lfoGain.gain.setValueAtTime(4, time); // detune range
-  
-  lfo.connect(lfoGain);
-  lfoGain.connect(osc.detune);
-  
-  gain.gain.setValueAtTime(0.012, time);
-  gain.gain.exponentialRampToValueAtTime(0.001, time + duration);
-  
-  osc.connect(filter);
-  filter.connect(gain);
-  connectToOutput(gain);
-  
-  lfo.start(time);
-  osc.start(time);
-  
-  lfo.stop(time + duration);
-  osc.stop(time + duration);
-}
-
-// Vibe 1: Paddling (Happy Chiptune Groove)
-function playPaddlingVibe() {
-  const synthList = [];
-  
-  // 1. Water waves background noise
-  const whiteNoise = audioCtx.createBufferSource();
-  whiteNoise.buffer = createNoiseBuffer(3.0);
-  whiteNoise.loop = true;
-  
-  const filter = audioCtx.createBiquadFilter();
-  filter.type = 'bandpass';
-  filter.frequency.value = 450;
-  filter.Q.value = 0.8;
-  
-  const waveLFO = audioCtx.createOscillator();
-  waveLFO.type = 'sine';
-  waveLFO.frequency.value = 0.15; // slow waves
-  
-  const lfoGain = audioCtx.createGain();
-  lfoGain.gain.value = 220;
-  
-  waveLFO.connect(lfoGain);
-  lfoGain.connect(filter.frequency);
-  
-  const waveGain = audioCtx.createGain();
-  waveGain.gain.value = 0.035;
-  
-  whiteNoise.connect(filter);
-  filter.connect(waveGain);
-  connectToOutput(waveGain);
-  
-  whiteNoise.start();
-  waveLFO.start();
-  synthList.push(whiteNoise, waveLFO, waveGain);
-
-  // 2. Chiptune step sequencer - Overhauled for Ambient Generative Variety
-  let currentStep = 0;
-  let nextNoteTime = audioCtx.currentTime;
-  let currentTransposition = 0; // base key shift in semitones
-  let activeSection = 'full'; // song part: full, ambient, breakdown, lead_only
-  
-  const lookAhead = 0.12;
-  const scheduleInterval = 40;
-  
-  // Day vs Night chords
-  const dayChords = [
-    { bass: 98.00,  pad: [196.00, 246.94, 293.66, 392.00] }, // Gmaj7
-    { bass: 130.81, pad: [261.63, 329.63, 392.00, 493.88] }, // Cmaj7
-    { bass: 110.00, pad: [220.00, 261.63, 329.63, 392.00] }, // Am7
-    { bass: 146.83, pad: [293.66, 369.99, 440.00, 587.33] }  // D7
-  ];
-  
-  const nightChords = [
-    { bass: 110.00, pad: [220.00, 261.63, 329.63, 392.00] }, // Am7
-    { bass: 73.42,  pad: [146.83, 196.00, 220.00, 293.66] }, // Dm7
-    { bass: 82.41,  pad: [164.81, 196.00, 246.94, 329.63] }, // Em7
-    { bass: 87.31,  pad: [174.61, 220.00, 261.63, 349.23] }  // Fmaj7
-  ];
-  
-  const dayScale = [392.00, 440.00, 493.88, 587.33, 659.25, 783.99, 880.00]; // G major pentatonic
-  const nightScale = [440.00, 493.88, 523.25, 587.33, 659.25, 783.99, 880.00]; // A minor pentatonic
-
-  function scheduleNote(step, time, stepSeconds) {
-    const timeVibe = getCurrentTimeOfDayVibe();
-    const activeChords = timeVibe.chordType === 'minor' ? nightChords : dayChords;
-    const activeScale = timeVibe.chordType === 'minor' ? nightScale : dayScale;
-    
-    // Coords modulation: base key transposition shift derived from GPS longitude
-    let coordShift = 0;
-    if (currentData.history && currentData.history.length > 0) {
-      const latestPt = currentData.history[currentData.history.length - 1];
-      coordShift = Math.floor(Math.abs(latestPt.lng)) % 12; // shift key by longitude
-    }
-    
-    // Evolve structure every 64 steps (32 beats)
-    if (step % 64 === 0) {
-      const sections = ['full', 'full', 'ambient', 'breakdown', 'lead_only'];
-      activeSection = sections[Math.floor(Math.random() * sections.length)];
-      
-      const keys = [-2, 0, 0, 2, 5, 7]; // standard transposition semitones (fourths, fifths, seconds)
-      currentTransposition = keys[Math.floor(Math.random() * keys.length)];
-    }
-    
-    const totalSemitones = currentTransposition + coordShift;
-    const transpose = (f) => f * Math.pow(2, totalSemitones / 12.0);
-    const chordIndex = Math.floor(step / 16) % activeChords.length; 
-    const stepInMeasure = step % 16;
-    const chord = activeChords[chordIndex];
-    
-    // Softer drum beat (lo-fi style) - Mute if time-of-day requests it, or in ambient section
-    const forceDrumMute = timeVibe.drumMute || activeSection === 'ambient';
-    if (!forceDrumMute) {
-      if (stepInMeasure === 0 || (stepInMeasure === 6 && Math.random() < 0.25)) {
-        playKick(time);
-        if (Math.random() < 0.6) {
-          playSFX('paddle', time + 0.05); // paddle splash synced on kick
-        }
-      }
-      if (stepInMeasure === 8) {
-        playSnare(time);
-      }
-    }
-    
-    // Slow walking bassline - Mute in ambient or lead_only, volume from time-of-day params
-    if (activeSection !== 'ambient' && activeSection !== 'lead_only') {
-      if (stepInMeasure === 0 || stepInMeasure === 4 || stepInMeasure === 8 || stepInMeasure === 12) {
-        let bassFreq = chord.bass;
-        if (stepInMeasure === 8 && Math.random() < 0.4) bassFreq *= 1.5;
-        
-        // Dynamically adjust bassVolume using timeOfDay params
-        const oldBassVol = bassVolume;
-        bassVolume = timeVibe.bassVolume;
-        playBass(transpose(bassFreq), time, stepSeconds * 1.5);
-        bassVolume = oldBassVol;
-      }
-    }
-    
-    // Rhodes Pad chords - Mute in breakdown section
-    if (activeSection !== 'breakdown') {
-      if (stepInMeasure === 0) {
-        chord.pad.forEach((f, idx) => {
-          playPadNote(transpose(f), time + (idx * 0.04), stepSeconds * 12);
-        });
-      }
-    }
-    
-    // Generative Lead Melodies - probability scaled by time-of-day & active sections
-    let leadProb = timeVibe.leadProb;
-    if (activeSection === 'breakdown') leadProb = 0.08;
-    if (activeSection === 'lead_only') leadProb = 0.45;
-    
-    if (stepInMeasure % 2 === 1 && Math.random() < leadProb) {
-      const freq = activeScale[Math.floor(Math.random() * activeScale.length)];
-      const finalFreq = Math.random() < 0.3 ? freq * 2 : freq;
-      
-      // Select voice type from time-of-day options
-      const voices = timeVibe.leadVoices;
-      const activeVoice = voices[Math.floor(Math.random() * voices.length)];
-      
-      playLeadNote(transpose(finalFreq), time, stepSeconds * 0.8, activeVoice);
-    }
-  }
-
-  function runSequencer() {
-    // Velocity modulation: adjust tempo dynamically based on speed!
-    let velocity = 0;
-    if (currentData.history && currentData.history.length > 0) {
-      velocity = currentData.history[currentData.history.length - 1].velocity || 0;
-    }
-    const tempo = 60 + Math.min(velocity * 6, 36); // maps 0-6 km/h to 60-96 BPM!
-    const secondsPerBeat = 60.0 / tempo;
-    const secondsPerStep = secondsPerBeat / 2; // eighth notes
-    
-    while (nextNoteTime < audioCtx.currentTime + lookAhead) {
-      scheduleNote(currentStep, nextNoteTime, secondsPerStep);
-      nextNoteTime += secondsPerStep;
-      currentStep = (currentStep + 1) % 32;
-    }
-    if (isMusicPlaying && currentVibe === 'paddling') {
-      audioTimer = setTimeout(runSequencer, scheduleInterval);
-    }
-  }
-  
-  runSequencer();
-  synthNodes['paddling'] = synthList;
-}
-
-// Vibe 2: Camping (Warm Campfire Drone & Guitar Melody)
-function playCampingVibe() {
-  const synthList = [];
-  
-  // 1. Warm Analog Chord Drone (A Major 9th chord)
-  const freqs = [110.00, 165.00, 220.00, 277.18, 392.00]; // Amaj9 notes
-  
-  freqs.forEach((freq, idx) => {
-    const osc = audioCtx.createOscillator();
-    const gain = audioCtx.createGain();
-    const filter = audioCtx.createBiquadFilter();
-    
-    osc.type = idx % 2 === 0 ? 'triangle' : 'sine';
-    osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
-    osc.detune.setValueAtTime((Math.random() - 0.5) * 12, audioCtx.currentTime);
-    
-    filter.type = 'lowpass';
-    filter.frequency.setValueAtTime(350, audioCtx.currentTime);
-    
-    // Drone swell LFO to make it drift organically
-    const lfo = audioCtx.createOscillator();
-    const lfoGain = audioCtx.createGain();
-    lfo.type = 'sine';
-    lfo.frequency.setValueAtTime(0.1 + (idx * 0.05), audioCtx.currentTime); // very slow tremolos
-    
-    lfoGain.gain.setValueAtTime(0.015, audioCtx.currentTime);
-    
-    lfo.connect(lfoGain);
-    lfoGain.connect(gain.gain);
-    
-    gain.gain.setValueAtTime(0.005, audioCtx.currentTime);
-    
-    osc.connect(filter);
-    filter.connect(gain);
-    connectToOutput(gain);
-    
-    osc.start();
-    lfo.start();
-    synthList.push(osc, lfo, gain, filter);
-  });
-  
-  // 2. Campfire Crackle & Whistling wood pop loop
-  function triggerCrackle() {
-    if (!isMusicPlaying || currentVibe !== 'camping') return;
-    
-    const time = audioCtx.currentTime;
-    
-    // Small crackle pops
-    const pop = audioCtx.createOscillator();
-    const popGain = audioCtx.createGain();
-    pop.type = 'sawtooth';
-    pop.frequency.setValueAtTime(800 + Math.random() * 2500, time);
-    
-    popGain.gain.setValueAtTime(0.012, time);
-    popGain.gain.exponentialRampToValueAtTime(0.0001, time + 0.005 + Math.random() * 0.015);
-    
-    const popFilter = audioCtx.createBiquadFilter();
-    popFilter.type = 'bandpass';
-    popFilter.frequency.setValueAtTime(1500, time);
-    popFilter.Q.setValueAtTime(3.0, time);
-    
-    pop.connect(popFilter);
-    popFilter.connect(popGain);
-    popGain.connect(audioCtx.destination);
-    
-    pop.start(time);
-    pop.stop(time + 0.05);
-    
-    // Next crackle pop
-    audioTimer = setTimeout(triggerCrackle, 40 + Math.random() * 400);
-  }
-  
-  triggerCrackle();
-
-  // 3. Sparse Acoustic Guitar/Bell Melody - Overhauled for Ambient Generative Variety
-  const dayMelodyScale = [196.00, 220.00, 246.94, 293.66, 329.63, 392.00, 440.00, 493.88]; // G Major Pentatonic (Day)
-  const nightMelodyScale = [220.00, 261.63, 293.66, 329.63, 392.00, 440.00, 523.25, 587.33]; // A Minor Pentatonic (Night)
-  
-  function triggerMelodyNote() {
-    if (!isMusicPlaying || currentVibe !== 'camping') return;
-    
-    const time = audioCtx.currentTime;
-    const isNight = isNightTime();
-    const activeScale = isNight ? nightMelodyScale : dayMelodyScale;
-    
-    // Generative chord pluck (arpeggiated)
-    const baseFreq = activeScale[Math.floor(Math.random() * 4)]; // root notes
-    const chordIntervals = [0, 2, 4]; // arpeggiating notes
-    
-    chordIntervals.forEach((intervalIdx, index) => {
-      const freq = activeScale[(activeScale.indexOf(baseFreq) + intervalIdx) % activeScale.length];
-      const osc = audioCtx.createOscillator();
-      const gain = audioCtx.createGain();
-      const delayNode = audioCtx.createDelay(1.0);
-      const delayGain = audioCtx.createGain();
-      
-      osc.type = 'triangle'; // triangle has a softer, guitar-like pluck feel
-      osc.frequency.setValueAtTime(freq, time + (index * 0.18)); // arpeggiated delay start
-      
-      // Long spatial echoes
-      delayNode.delayTime.setValueAtTime(0.55, time); // 550ms echoes
-      delayGain.gain.setValueAtTime(0.38, time); // feedback volume
-      
-      delayNode.connect(delayGain);
-      delayGain.connect(delayNode);
-      
-      gain.gain.setValueAtTime(0, time + (index * 0.18));
-      gain.gain.linearRampToValueAtTime(0.022, time + (index * 0.18) + 0.04);
-      gain.gain.exponentialRampToValueAtTime(0.0001, time + (index * 0.18) + 2.0);
-      
-      osc.connect(gain);
-      connectToOutput(gain);
-      
-      gain.connect(delayNode);
-      connectToOutput(delayNode);
-      
-      osc.start(time + (index * 0.18));
-      osc.stop(time + (index * 0.18) + 2.2);
-    });
-    
-    // Very slow, passive delay for campfire relaxation (5 to 11 seconds)
-    const nextInterval = 5000 + Math.random() * 6000;
-    audioTimer = setTimeout(triggerMelodyNote, nextInterval);
-  }
-  
-  // Start melody loop after 1.5s
-  audioTimer = setTimeout(triggerMelodyNote, 1500);
-  synthNodes['camping'] = synthList;
-}
-
-// Vibe 3: Skeleton (Hollow Echo Chimes & Desert Wind)
-// Vibe 3: Resting (Hollow Echo Chimes & Desert Wind)
-function playRestingVibe() {
-  const synthList = [];
-  
-  // 1. Whistling Desert Wind (Modulated Noise)
-  const windBuffer = createNoiseBuffer(3.0);
-  const windSrc = audioCtx.createBufferSource();
-  windSrc.buffer = windBuffer;
-  windSrc.loop = true;
-  
-  const windFilter = audioCtx.createBiquadFilter();
-  windFilter.type = 'bandpass';
-  windFilter.Q.setValueAtTime(5.0, audioCtx.currentTime); // high Q whistling
-  
-  // LFO to slowly sweep wind frequency
-  const windLFO = audioCtx.createOscillator();
-  windLFO.type = 'sine';
-  windLFO.frequency.setValueAtTime(0.06, audioCtx.currentTime); // slow gusts
-  
-  const lfoGain = audioCtx.createGain();
-  lfoGain.gain.setValueAtTime(140, audioCtx.currentTime); // sweep between 220Hz and 500Hz
-  
-  windLFO.connect(lfoGain);
-  lfoGain.connect(windFilter.frequency);
-  
-  const windGain = audioCtx.createGain();
-  windGain.gain.setValueAtTime(0, audioCtx.currentTime);
-  windGain.gain.linearRampToValueAtTime(0.065, audioCtx.currentTime + 3.0); // slow fade in
-  
-  windSrc.connect(windFilter);
-  windFilter.connect(windGain);
-  connectToOutput(windGain);
-  
-  windSrc.start();
-  windLFO.start();
-  synthList.push(windSrc, windLFO, windGain, windFilter);
-  
-  // 2. Sub-Bass Hum (Deep hollow tone)
-  const subOsc = audioCtx.createOscillator();
-  const subGain = audioCtx.createGain();
-  
-  subOsc.type = 'sine';
-  subOsc.frequency.setValueAtTime(48.99, audioCtx.currentTime); // G1 note
-  
-  subGain.gain.setValueAtTime(0, audioCtx.currentTime);
-  subGain.gain.linearRampToValueAtTime(0.04, audioCtx.currentTime + 4.0);
-  
-  subOsc.connect(subGain);
-  connectToOutput(subGain);
-  subOsc.start();
-  synthList.push(subOsc, subGain);
-
-  // 3. Hollow Echoing Wind Chimes
-  const chimeScale = [587.33, 659.25, 783.99, 880.00, 987.77, 1174.66, 1318.51]; // G Pentatonic high notes
-  
-  function triggerChime() {
-    if (!isMusicPlaying || currentVibe !== 'resting') return;
-    
-    const time = audioCtx.currentTime;
-    const freq = chimeScale[Math.floor(Math.random() * chimeScale.length)];
-    
-    const osc = audioCtx.createOscillator();
-    const gain = audioCtx.createGain();
-    const delay = audioCtx.createDelay(1.5);
-    const delayFeedback = audioCtx.createGain();
-    
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(freq, time);
-    
-    // Set feedback echo line
-    delay.delayTime.setValueAtTime(0.65, time); // 650ms chime delay
-    delayFeedback.gain.setValueAtTime(0.42, time); // echoing feedback
-    
-    delay.connect(delayFeedback);
-    delayFeedback.connect(delay);
-    
-    gain.gain.setValueAtTime(0, time);
-    gain.gain.linearRampToValueAtTime(0.015, time + 0.02); // quick chime ring
-    gain.gain.exponentialRampToValueAtTime(0.0001, time + 1.2);
-    
-    osc.connect(gain);
-    connectToOutput(gain);
-    
-    gain.connect(delay);
-    connectToOutput(delay);
-    
-    osc.start(time);
-    osc.stop(time + 1.5);
-    
-    // Next chime in 2 to 5 seconds
-    const nextChimeTime = 2000 + Math.random() * 3000;
-    audioTimer = setTimeout(triggerChime, nextChimeTime);
-  }
-  
-  // Start chime loop
-  audioTimer = setTimeout(triggerChime, 2000);
-  
-  // 4. Sparse Bird Chirping SFX (loop)
-  function triggerBirdChirp() {
-    if (!isMusicPlaying || currentVibe !== 'resting') return;
-    playSFX('chirp');
-    const nextChirp = 8000 + Math.random() * 7000;
-    audioTimer = setTimeout(triggerBirdChirp, nextChirp);
-  }
-  audioTimer = setTimeout(triggerBirdChirp, 3000);
-  
-  synthNodes['resting'] = synthList;
-}
-
-// Vibe 4: Disconnected (Glitchy Static Record Crackle & Radar Ping)
-function playDisconnectedVibe() {
-  const synthList = [];
-  
-  // 1. Glitchy Vinyl Static Record Crackle
-  function triggerStaticCrackle() {
-    if (!isMusicPlaying || currentVibe !== 'disconnected') return;
-    
-    const time = audioCtx.currentTime;
-    
-    const pop = audioCtx.createOscillator();
-    const popGain = audioCtx.createGain();
-    
-    pop.type = 'sawtooth';
-    pop.frequency.setValueAtTime(100 + Math.random() * 800, time);
-    
-    popGain.gain.setValueAtTime(0.015, time);
-    popGain.gain.exponentialRampToValueAtTime(0.0001, time + 0.01 + Math.random() * 0.03);
-    
-    const filter = audioCtx.createBiquadFilter();
-    filter.type = 'bandpass';
-    filter.frequency.setValueAtTime(500, time);
-    filter.Q.setValueAtTime(1.0, time);
-    
-    pop.connect(filter);
-    filter.connect(popGain);
-    popGain.connect(audioCtx.destination);
-    
-    pop.start(time);
-    pop.stop(time + 0.08);
-    
-    // Next crackle pop
-    audioTimer = setTimeout(triggerStaticCrackle, 80 + Math.random() * 600);
-  }
-  
-  triggerStaticCrackle();
-  
-  // 2. Slow Radar/Sonar Ping
-  function triggerSonarPing() {
-    if (!isMusicPlaying || currentVibe !== 'disconnected') return;
-    
-    const time = audioCtx.currentTime;
-    
-    const osc = audioCtx.createOscillator();
-    const gain = audioCtx.createGain();
-    const delay = audioCtx.createDelay(2.0);
-    const delayFeedback = audioCtx.createGain();
-    
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(880.00, time); // high A ping
-    
-    delay.delayTime.setValueAtTime(0.60, time);
-    delayFeedback.gain.setValueAtTime(0.55, time);
-    
-    delay.connect(delayFeedback);
-    delayFeedback.connect(delay);
-    
-    gain.gain.setValueAtTime(0, time);
-    gain.gain.linearRampToValueAtTime(0.02, time + 0.03);
-    gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.8);
-    
-    osc.connect(gain);
-    connectToOutput(gain);
-    
-    gain.connect(delay);
-    connectToOutput(delay);
-    
-    osc.start(time);
-    osc.stop(time + 1.0);
-    
-    audioTimer = setTimeout(triggerSonarPing, 4000);
-  }
-  
-  audioTimer = setTimeout(triggerSonarPing, 1000);
-  synthNodes['disconnected'] = synthList;
-}
-
-// 7. Developer Overrides & Procedural Assets
-
+// 7. Developer Control Overrides
 function triggerOverrideUpdate() {
-  // If all overrides are set back to auto, refresh data from the server
   if (devStateOverride === 'auto' && devTimeOverride === 'auto' && devWeatherOverride === 'auto') {
     fetchData();
     return;
@@ -2038,548 +1230,115 @@ function triggerOverrideUpdate() {
     currentData.weather = devWeatherOverride;
   }
   
+  setAudioState(currentData, devTimeOverride, pollIntervalSeconds);
+  setWeatherState(map, avatarMarker, currentData, devTimeOverride);
+
   updateUI();
   updateMap();
   updateAudioVibe(currentData.currentState, true);
 }
 
-function isNightTime() {
-  if (devTimeOverride === 'night' || devTimeOverride === 'evening' || devTimeOverride === 'latenight') return true;
-  if (devTimeOverride === 'day' || devTimeOverride === 'morning' || devTimeOverride === 'afternoon') return false;
-  
-  const now = new Date();
-  let localHour = now.getHours(); // fallback
-  
-  if (currentData.history && currentData.history.length > 0) {
-    const latest = currentData.history[currentData.history.length - 1];
-    const offsetHours = Math.round(latest.lng / 15.0);
-    const localDate = new Date(now.getTime() + (offsetHours * 3600000));
-    localHour = localDate.getUTCHours();
-  }
-  
-  return localHour >= 18 || localHour < 6;
+// Set up UI panel bindings
+const stateSelect = document.getElementById('dev-state');
+if (stateSelect) {
+  stateSelect.addEventListener('change', (e) => {
+    devStateOverride = e.target.value;
+    triggerOverrideUpdate();
+  });
 }
 
-// Procedural 8-bit SVG Sprite Drawings
-
-function getGoalFlagSVG() {
-  return `
-    <svg width="48" height="48" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg" style="image-rendering: pixelated; width: 100%; height: 100%;">
-      <!-- Flag pole -->
-      <rect x="10" y="4" width="4" height="40" fill="#aaaaaa"/>
-      <rect x="8" y="42" width="8" height="2" fill="#888888"/>
-      
-      <!-- Flag banner (checkerboard retro pattern) -->
-      <!-- Row 1 -->
-      <rect x="14" y="6" width="6" height="6" fill="#ffffff"/>
-      <rect x="20" y="6" width="6" height="6" fill="#000000"/>
-      <rect x="26" y="6" width="6" height="6" fill="#ffffff"/>
-      <rect x="32" y="6" width="6" height="6" fill="#000000"/>
-      <!-- Row 2 -->
-      <rect x="14" y="12" width="6" height="6" fill="#000000"/>
-      <rect x="20" y="12" width="6" height="6" fill="#ffffff"/>
-      <rect x="26" y="12" width="6" height="6" fill="#000000"/>
-      <rect x="32" y="12" width="6" height="6" fill="#ffffff"/>
-      <!-- Row 3 -->
-      <rect x="14" y="18" width="6" height="6" fill="#ffffff"/>
-      <rect x="20" y="18" width="6" height="6" fill="#000000"/>
-      <rect x="26" y="18" width="6" height="6" fill="#ffffff"/>
-      <rect x="32" y="18" width="6" height="6" fill="#000000"/>
-      
-      <!-- Bottom border glow -->
-      <rect x="14" y="24" width="24" height="2" fill="#ff0055"/>
-    </svg>
-  `;
+const timeSelect = document.getElementById('dev-time');
+if (timeSelect) {
+  timeSelect.addEventListener('change', (e) => {
+    devTimeOverride = e.target.value;
+    triggerOverrideUpdate();
+  });
 }
 
-function getCanoeSVG() {
-  // Orange-brown wood canoe containing two green NES-style pixel art dinosaurs
-  return `
-    <svg width="64" height="48" viewBox="0 0 64 48" xmlns="http://www.w3.org/2000/svg" style="image-rendering: pixelated; width: 100%; height: 100%;">
-      <!-- Dino 1 (Rear/Left) -->
-      <g transform="translate(16, 4)">
-        <rect x="6" y="0" width="8" height="6" fill="#39ff14"/>
-        <rect x="12" y="2" width="2" height="2" fill="#000"/>
-        <rect x="2" y="6" width="10" height="12" fill="#39ff14"/>
-        <rect x="4" y="18" width="2" height="4" fill="#32c710"/>
-        <rect x="8" y="18" width="2" height="4" fill="#32c710"/>
-        <rect x="0" y="10" width="2" height="6" fill="#39ff14"/>
-        <rect x="10" y="12" width="4" height="2" fill="#39ff14"/>
-      </g>
-      <!-- Dino 2 (Front/Right) -->
-      <g transform="translate(28, 6)">
-        <rect x="6" y="0" width="8" height="6" fill="#2ad10d"/>
-        <rect x="12" y="2" width="2" height="2" fill="#000"/>
-        <rect x="2" y="6" width="10" height="12" fill="#2ad10d"/>
-        <rect x="4" y="18" width="2" height="4" fill="#209c09"/>
-        <rect x="8" y="18" width="2" height="4" fill="#209c09"/>
-        <rect x="0" y="10" width="2" height="6" fill="#2ad10d"/>
-        <rect x="10" y="12" width="4" height="2" fill="#2ad10d"/>
-      </g>
-      <!-- Canoe Hull -->
-      <path d="M 6,32 C 14,44 50,44 58,32 L 55,26 C 46,30 18,30 9,26 Z" fill="#b05d2e" stroke="#5a2c16" stroke-width="2"/>
-      <!-- Oar 1 -->
-      <line x1="20" y1="24" x2="10" y2="40" stroke="#ffcc00" stroke-width="3" stroke-linecap="round"/>
-      <!-- Oar 2 -->
-      <line x1="34" y1="26" x2="24" y2="42" stroke="#ffcc00" stroke-width="3" stroke-linecap="round"/>
-      <!-- Water splash pixels -->
-      <rect x="3" y="31" width="2" height="2" fill="#00f3ff"/>
-      <rect x="59" y="31" width="2" height="2" fill="#00f3ff"/>
-    </svg>
-  `;
+const weatherSelect = document.getElementById('dev-weather');
+if (weatherSelect) {
+  weatherSelect.addEventListener('change', (e) => {
+    devWeatherOverride = e.target.value;
+    triggerOverrideUpdate();
+  });
 }
 
-function getOneTentSVG() {
-  // Triangular pixel-art tent with a warm campfire
-  return `
-    <svg width="64" height="48" viewBox="0 0 64 48" xmlns="http://www.w3.org/2000/svg" style="image-rendering: pixelated; width: 100%; height: 100%;">
-      <!-- Background pines -->
-      <polygon points="12,24 6,36 18,36" fill="#142e16"/>
-      <polygon points="52,24 46,36 58,36" fill="#142e16"/>
-      
-      <!-- Tent -->
-      <polygon points="34,12 18,36 50,36" fill="#007d7d" stroke="#004747" stroke-width="2"/>
-      <polygon points="34,12 34,36 50,36" fill="#00acac"/>
-      <polygon points="34,22 26,36 42,36" fill="#151515"/>
-      
-      <!-- Campfire -->
-      <g transform="translate(8, 32)">
-        <line x1="0" y1="4" x2="8" y2="0" stroke="#5c2c16" stroke-width="2.5"/>
-        <line x1="1" y1="0" x2="7" y2="4" stroke="#5c2c16" stroke-width="2.5"/>
-        <polygon points="4,-7 1,-1 7,-1" fill="#ff3300"/>
-        <polygon points="4,-4 2,0 6,0" fill="#ffcc00"/>
-      </g>
-    </svg>
-  `;
+const feedSelect = document.getElementById('dev-feed');
+if (feedSelect) {
+  feedSelect.addEventListener('change', (e) => {
+    const useTest = e.target.value === 'test';
+    toggleResetRouteButton(useTest);
+    updateSettingsOnServer(useTest, pollIntervalSeconds);
+  });
 }
 
-function getTwoTentsSVG() {
-  // Two triangular pixel-art tents next to each other with a glowing campfire (Night Mode)
-  return `
-    <svg width="72" height="48" viewBox="0 0 72 48" xmlns="http://www.w3.org/2000/svg" style="image-rendering: pixelated; width: 100%; height: 100%;">
-      <!-- Tent 1 (Left/Back) -->
-      <g transform="translate(4, 4)">
-        <polygon points="24,12 10,36 38,36" fill="#005757" stroke="#002d2d" stroke-width="2"/>
-        <polygon points="24,12 24,36 38,36" fill="#008080"/>
-        <polygon points="24,22 18,36 30,36" fill="#111"/>
-      </g>
-      <!-- Tent 2 (Right/Front) -->
-      <g transform="translate(20, 8)">
-        <polygon points="24,12 10,36 38,36" fill="#007d7d" stroke="#004747" stroke-width="2"/>
-        <polygon points="24,12 24,36 38,36" fill="#00acac"/>
-        <polygon points="24,22 18,36 30,36" fill="#181818"/>
-      </g>
-      
-      <!-- Campfire -->
-      <g transform="translate(18, 34)">
-        <line x1="0" y1="4" x2="10" y2="0" stroke="#5c2c16" stroke-width="2.5"/>
-        <line x1="1" y1="0" x2="9" y2="4" stroke="#5c2c16" stroke-width="2.5"/>
-        <polygon points="5,-9 1,-1 9,-1" fill="#ff3300"/>
-        <polygon points="5,-5 3,0 7,0" fill="#ffcc00"/>
-      </g>
-    </svg>
-  `;
+const periodSelect = document.getElementById('dev-period');
+if (periodSelect) {
+  periodSelect.addEventListener('change', (e) => {
+    const feedVal = document.getElementById('dev-feed').value;
+    updateSettingsOnServer(feedVal === 'test', e.target.value);
+  });
 }
 
-function getRestingHammockSVG() {
-  // Orange-brown wood hammock between two pixel art palm trees, with a lounging green dino wearing cool sunglasses
-  return `
-    <svg width="72" height="48" viewBox="0 0 72 48" xmlns="http://www.w3.org/2000/svg" style="image-rendering: pixelated; width: 100%; height: 100%;">
-      <!-- Left Palm Tree -->
-      <g transform="translate(4, 2)">
-        <!-- Trunk -->
-        <rect x="7" y="10" width="4" height="28" fill="#8d4a1f"/>
-        <rect x="6" y="14" width="2" height="2" fill="#b05d2e"/>
-        <rect x="6" y="22" width="2" height="2" fill="#b05d2e"/>
-        <!-- Leaves -->
-        <polygon points="9,10 0,4 6,7" fill="#1b850a"/>
-        <polygon points="9,10 18,4 12,7" fill="#1b850a"/>
-        <polygon points="9,10 4,14 8,11" fill="#156407"/>
-        <polygon points="9,10 14,14 10,11" fill="#156407"/>
-        <polygon points="9,10 9,0 8,6" fill="#22aa0f"/>
-      </g>
-      
-      <!-- Right Palm Tree -->
-      <g transform="translate(54, 2)">
-        <!-- Trunk -->
-        <rect x="7" y="10" width="4" height="28" fill="#8d4a1f"/>
-        <rect x="6" y="14" width="2" height="2" fill="#b05d2e"/>
-        <rect x="6" y="22" width="2" height="2" fill="#b05d2e"/>
-        <!-- Leaves -->
-        <polygon points="9,10 0,4 6,7" fill="#1b850a"/>
-        <polygon points="9,10 18,4 12,7" fill="#1b850a"/>
-        <polygon points="9,10 4,14 8,11" fill="#156407"/>
-        <polygon points="9,10 14,14 10,11" fill="#156407"/>
-        <polygon points="9,10 9,0 8,6" fill="#22aa0f"/>
-      </g>
-      
-      <!-- Hammock ropes -->
-      <line x1="13" y1="20" x2="20" y2="28" stroke="#aa7a1e" stroke-width="2"/>
-      <line x1="61" y1="20" x2="54" y2="28" stroke="#aa7a1e" stroke-width="2"/>
-      
-      <!-- Hammock Bed (draped curve) -->
-      <path d="M 20,28 Q 37,39 54,28" stroke="#d5601a" stroke-width="3" fill="none"/>
-      
-      <!-- Lounging Green Dino inside Hammock -->
-      <g transform="translate(24, 18)">
-        <!-- Dino tail hanging slightly -->
-        <rect x="0" y="4" width="3" height="6" fill="#39ff14"/>
-        <rect x="1" y="8" width="2" height="4" fill="#32c710"/>
-        <!-- Body lying back -->
-        <rect x="2" y="2" width="16" height="8" fill="#39ff14"/>
-        <rect x="4" y="6" width="14" height="4" fill="#32c710"/> <!-- shadow -->
-        <!-- Head resting back -->
-        <rect x="14" y="-2" width="7" height="7" fill="#39ff14"/>
-        <!-- Cool sunglasses -->
-        <rect x="16" y="0" width="5" height="2" fill="#000"/>
-        <line x1="15" y1="0" x2="16" y2="0" stroke="#000" stroke-width="1"/>
-      </g>
-    </svg>
-  `;
+const resetBtn = document.getElementById('dev-reset');
+if (resetBtn) {
+  resetBtn.addEventListener('click', () => {
+    fetch(getApiUrl('/api/v1/test/reset'), { method: 'POST' })
+      .then(response => response.json())
+      .then(res => {
+        console.log("Route reset status:", res);
+        fetchData();
+      })
+      .catch(err => console.error("Error resetting route:", err));
+  });
 }
 
-function getDisconnectedDinoSVG() {
-  // Dino holding a search flag or looking at a flashing warning antenna pole
-  return `
-    <svg width="54" height="48" viewBox="0 0 54 48" xmlns="http://www.w3.org/2000/svg" style="image-rendering: pixelated; width: 100%; height: 100%;">
-      <!-- Dino standing, scratching head looking at antenna -->
-      <g transform="translate(6, 12)">
-        <rect x="6" y="0" width="10" height="8" fill="#39ff14"/>
-        <rect x="8" y="2" width="2" height="2" fill="#000"/> <!-- eye -->
-        <rect x="0" y="8" width="12" height="14" fill="#39ff14"/> <!-- body -->
-        <rect x="2" y="22" width="3" height="4" fill="#32c710"/>
-        <rect x="7" y="22" width="3" height="4" fill="#32c710"/>
-        <!-- tail -->
-        <path d="M 0,14 L -4,18 L -4,20 Z" fill="#39ff14"/>
-        <!-- arm scratching head -->
-        <rect x="12" y="8" width="2" height="4" fill="#39ff14"/>
-        <rect x="10" y="6" width="4" height="2" fill="#39ff14"/>
-      </g>
-      <!-- Warning Antenna pole -->
-      <g transform="translate(36, 14)">
-        <!-- Antenna metal pole -->
-        <rect x="5" y="6" width="2" height="24" fill="#888888"/>
-        <rect x="2" y="28" width="8" height="2" fill="#888888"/>
-        <!-- Satellite dish bowl shape -->
-        <path d="M 0,8 C 0,16 12,16 12,8" stroke="#aaaaaa" stroke-width="2.5" fill="none"/>
-        <!-- Flashing Red warning circle -->
-        <circle cx="6" cy="1" r="3.5" fill="#ff0055" class="flicker-loop"/>
-      </g>
-    </svg>
-  `;
-}
 
-// 8. SFX & Weather Modulation Audio Engine
-
-function toggleSFX() {
-  const btn = document.getElementById('sfx-toggle');
-  if (!audioCtx) {
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  }
-  if (!masterFilter) {
-    masterFilter = audioCtx.createBiquadFilter();
-    masterFilter.type = 'lowpass';
-    masterFilter.frequency.setValueAtTime(20000, audioCtx.currentTime);
-    masterFilter.connect(audioCtx.destination);
-  }
-  if (audioCtx.state === 'suspended') {
-    audioCtx.resume();
-  }
-  
-  if (!isSFXEnabled) {
-    isSFXEnabled = true;
-    btn.className = 'neon-btn play';
-    document.getElementById('sfx-label').textContent = 'SFX: ON';
-    playSFX('click');
-  } else {
-    isSFXEnabled = false;
-    btn.className = 'neon-btn mute';
-    document.getElementById('sfx-label').textContent = 'SFX: OFF';
-  }
-}
-
-function playSFX(type, scheduledTime) {
-  if (!isSFXEnabled || !audioCtx) return;
-  const time = scheduledTime || audioCtx.currentTime;
-  
-  if (type === 'click') {
-    const osc = audioCtx.createOscillator();
-    const gain = audioCtx.createGain();
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(1000, time);
-    osc.frequency.exponentialRampToValueAtTime(120, time + 0.08);
-    gain.gain.setValueAtTime(0.04, time);
-    gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.08);
-    osc.connect(gain);
-    gain.connect(audioCtx.destination);
-    osc.start(time);
-    osc.stop(time + 0.1);
-  } 
-  else if (type === 'paddle') {
-    const noise = audioCtx.createBufferSource();
-    noise.buffer = createNoiseBuffer(0.2);
-    const filter = audioCtx.createBiquadFilter();
-    filter.type = 'bandpass';
-    filter.frequency.setValueAtTime(300, time);
-    filter.frequency.exponentialRampToValueAtTime(600, time + 0.18);
-    filter.Q.setValueAtTime(1.5, time);
-    const gain = audioCtx.createGain();
-    gain.gain.setValueAtTime(0.035, time);
-    gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.18);
-    noise.connect(filter);
-    filter.connect(gain);
-    gain.connect(audioCtx.destination);
-    noise.start(time);
-    noise.stop(time + 0.2);
-  } 
-  else if (type === 'thunder') {
-    const noise = audioCtx.createBufferSource();
-    noise.buffer = createNoiseBuffer(1.5);
-    const filter = audioCtx.createBiquadFilter();
-    filter.type = 'lowpass';
-    filter.frequency.setValueAtTime(180, time);
-    filter.frequency.linearRampToValueAtTime(30, time + 1.2);
-    const gain = audioCtx.createGain();
-    gain.gain.setValueAtTime(0.12, time);
-    gain.gain.linearRampToValueAtTime(0.02, time + 0.3);
-    gain.gain.exponentialRampToValueAtTime(0.0001, time + 1.5);
-    noise.connect(filter);
-    filter.connect(gain);
-    gain.connect(audioCtx.destination);
-    noise.start(time);
-    noise.stop(time + 1.6);
-  } 
-  else if (type === 'chirp') {
-    const osc = audioCtx.createOscillator();
-    const gain = audioCtx.createGain();
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(800, time);
-    osc.frequency.linearRampToValueAtTime(1600, time + 0.04);
-    osc.frequency.linearRampToValueAtTime(1200, time + 0.08);
-    osc.frequency.linearRampToValueAtTime(1800, time + 0.12);
-    gain.gain.setValueAtTime(0.015, time);
-    gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.14);
-    osc.connect(gain);
-    gain.connect(audioCtx.destination);
-    osc.start(time);
-    osc.stop(time + 0.15);
-  }
-}
-
-function modulateMusicByWeather() {
-  if (!audioCtx || !masterFilter) return;
-  const time = audioCtx.currentTime;
-  const weather = currentData.weather || 'clear';
-  
-  let baseFreq = 20000; // default clear
-  if (weather === 'cloudy') {
-    baseFreq = 1600; // slightly warm/filtered
-  } else if (weather === 'rainy') {
-    baseFreq = 800; // muffled
-  } else if (weather === 'stormy') {
-    baseFreq = 480; // very dark/submerged
-  } else if (weather === 'snowy') {
-    baseFreq = 3500; // crisp
-  }
-  
-  // Latitude modulation: sound gets darker (colder) further north, brighter (warmer) further south
-  let latFactor = 1.0;
-  if (currentData.history && currentData.history.length > 0) {
-    const latest = currentData.history[currentData.history.length - 1];
-    const lat = latest.lat || 49.0;
-    // Map latitude range 40N (warmest) to 60N (coldest) -> scales filter frequency by 1.25 down to 0.45
-    latFactor = 1.25 - Math.min(Math.max((lat - 40) / 20.0, 0), 1) * 0.8;
-  }
-  
-  const targetFreq = Math.min(Math.max(baseFreq * latFactor, 200), 20000);
-  masterFilter.frequency.setTargetAtTime(targetFreq, time, 1.5); // 1.5s smooth transition glide!
-}
-
-// Test settings helper functions
-function fetchSettings() {
-  fetch('/api/v1/settings')
-    .then(response => response.json())
-    .then(settings => {
-      const devFeedSelect = document.getElementById('dev-feed');
-      const devPeriodSelect = document.getElementById('dev-period');
-      
-      if (devFeedSelect) {
-        devFeedSelect.value = settings.use_test_server ? 'test' : 'live';
-        toggleResetRouteButton(settings.use_test_server);
-      }
-      if (devPeriodSelect) {
-        devPeriodSelect.value = settings.poll_interval_seconds.toString();
-      }
-      
-      setFetchInterval(settings.poll_interval_seconds);
-    })
-    .catch(err => console.error('Error fetching settings:', err));
-}
-
-function updateSettings(useTestServer, pollIntervalSeconds) {
-  fetch('/api/v1/settings', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      use_test_server: useTestServer,
-      poll_interval_seconds: pollIntervalSeconds
-    })
-  })
-    .then(response => response.json())
-    .then(settings => {
-      console.log('Settings updated:', settings);
-      setFetchInterval(settings.poll_interval_seconds);
-      fetchData();
-    })
-    .catch(err => console.error('Error updating settings:', err));
-}
-
-function setFetchInterval(seconds) {
-  clearInterval(pollInterval);
-  const ms = seconds * 1000;
-  pollInterval = setInterval(fetchData, ms);
-  pollIntervalSeconds = seconds;
-  console.log(`Frontend poll interval set to ${seconds}s`);
-}
-
-function toggleResetRouteButton(useTestServer) {
-  const resetRouteRow = document.getElementById('dev-reset-route-row');
+function toggleResetRouteButton(show) {
+  const resetRouteRow = document.getElementById('dev-reset').closest('.dev-row');
   if (resetRouteRow) {
-    if (useTestServer) {
-      resetRouteRow.style.display = 'flex';
-    } else {
-      resetRouteRow.style.display = 'none';
-    }
+    resetRouteRow.style.display = show ? 'flex' : 'none';
   }
 }
 
-// Extrapolation and smoothing helpers
-function getExtrapolatedLatLng() {
-  if (!currentData.history || currentData.history.length < 2) {
-    return null;
-  }
-  
-  if (currentData.currentState !== 'paddling') {
-    return null;
-  }
-  
-  const history = currentData.history;
-  const N = history.length;
-  const lastPoint = history[N - 1];
-  const prevPoint = history[N - 2];
-  
-  // Calculate average velocity vector using the last 3-4 points (weighted towards recent)
-  const stepsToUse = Math.min(3, N - 1);
-  const weights = [1.0, 0.5, 0.25];
-  
-  let weightedLatSpeed = 0;
-  let weightedLngSpeed = 0;
-  let weightSum = 0;
-  
-  for (let i = 0; i < stepsToUse; i++) {
-    const curr = history[N - 1 - i];
-    const prev = history[N - 2 - i];
-    
-    const currTime = new Date(curr.timestamp).getTime();
-    const prevTime = new Date(prev.timestamp).getTime();
-    const timeDiff = currTime - prevTime;
-    
-    if (timeDiff > 0) {
-      const dLat = curr.lat - prev.lat;
-      const dLng = curr.lng - prev.lng;
-      const speedLat = dLat / timeDiff;
-      const speedLng = dLng / timeDiff;
-      const weight = weights[i];
-      
-      weightedLatSpeed += speedLat * weight;
-      weightedLngSpeed += speedLng * weight;
-      weightSum += weight;
-    }
-  }
-  
-  if (weightSum === 0) {
-    return null;
-  }
-  
-  const latSpeedGPS = weightedLatSpeed / weightSum;
-  const lngSpeedGPS = weightedLngSpeed / weightSum;
-  
-  // Calculate client-side elapsed time since last update arrived at client
-  const now = performance.now();
-  let elapsedClientMs = 0;
-  if (lastUpdateClientTime !== null) {
-    elapsedClientMs = now - lastUpdateClientTime;
-  }
-  
-  // Convert client elapsed time to GPS-equivalent elapsed time using scale
-  let elapsedGPSEstimateMs = elapsedClientMs * gpsTimeScale;
-  
-  // Cap extrapolation to 1.5 times the GPS time difference to prevent runaway
-  const lastPointTime = new Date(lastPoint.timestamp).getTime();
-  const prevPointTime = new Date(prevPoint.timestamp).getTime();
-  const gpsTimeStep = lastPointTime - prevPointTime;
-  const maxExtrapolateGPSMs = gpsTimeStep > 0 ? 1.5 * gpsTimeStep : 1.5 * pollIntervalSeconds * 1000;
-  
-  if (elapsedGPSEstimateMs > maxExtrapolateGPSMs) {
-    elapsedGPSEstimateMs = maxExtrapolateGPSMs;
-  }
-  
-  const extLat = lastPoint.lat + latSpeedGPS * elapsedGPSEstimateMs;
-  const extLng = lastPoint.lng + lngSpeedGPS * elapsedGPSEstimateMs;
-  
-  // Cache the last raw extrapolated coordinate
-  lastExtrapolatedLatLng = { lat: extLat, lng: extLng };
-  
-  return lastExtrapolatedLatLng;
-}
-
+// 8. 60fps Frame Animation Loop
 let lastFrameTime = performance.now();
 function animateAvatar(currentTime) {
-  requestAnimationFrame(animateAvatar);
-  
-  if (!map || currentData.history.length === 0) return;
-  
-  const dt = (currentTime - lastFrameTime) / 1000; // in seconds
+  const frameDtMs = currentTime - lastFrameTime;
   lastFrameTime = currentTime;
   
-  if (isZooming) {
+  if (!map || !map._loaded) {
+    requestAnimationFrame(animateAvatar);
     return;
   }
   
-  // 1. Calculate extrapolation and target LatLng in real-time on every frame
-  const extrapolatedPoint = getExtrapolatedLatLng();
+  if (currentData.history.length === 0) {
+    requestAnimationFrame(animateAvatar);
+    return;
+  }
   
+  const lastPoint = currentData.history[currentData.history.length - 1];
+  
+  // 1. Gather extrapolation coordinates for the route path preview line
   const historyWithExtrapolation = [...currentData.history];
-  if (extrapolatedPoint) {
+  if (extrapolatedTargetLatLng && currentData.currentState === 'paddling') {
     historyWithExtrapolation.push({
-      lat: extrapolatedPoint.lat,
-      lng: extrapolatedPoint.lng,
-      timestamp: new Date().toISOString(),
-      velocity: currentData.history[currentData.history.length - 1].velocity
+      lat: extrapolatedTargetLatLng.lat,
+      lng: extrapolatedTargetLatLng.lng,
+      timestamp: new Date()
     });
   }
   
   const snappedLatLngs = snapToTransitAngles(historyWithExtrapolation);
   
-  let targetLatLng;
   let extSnapped = [];
-  
-  if (extrapolatedPoint && snappedLatLngs.length > 1) {
-    targetLatLng = snappedLatLngs[snappedLatLngs.length - 1];
+  if (extrapolatedTargetLatLng && snappedLatLngs.length > 1 && currentData.currentState === 'paddling') {
     extSnapped = [
       snappedLatLngs[snappedLatLngs.length - 2],
       snappedLatLngs[snappedLatLngs.length - 1]
     ];
-  } else {
-    targetLatLng = snappedLatLngs[snappedLatLngs.length - 1];
   }
   
-  const wrappedTargetLatLng = getWrappedLatLng(targetLatLng);
-  targetAvatarLatLng = wrappedTargetLatLng;
-  
-  // 2. Draw / Update extrapolation dotted polyline in real-time
   if (extSnapped.length > 0) {
     const wrappedExtLatLngs = getWrappedLatLngs(extSnapped);
     if (extrapolationPolyline) {
@@ -2600,25 +1359,78 @@ function animateAvatar(currentTime) {
     }
   }
   
-  // 3. Smoothly glide the avatar marker position in real-time
+  // 2. Gliding movement calculations
+  const predPoint = (extrapolatedTargetLatLng && currentData.currentState === 'paddling') 
+    ? extrapolatedTargetLatLng 
+    : L.latLng(lastPoint.lat, lastPoint.lng);
+    
+  const wrappedPredPoint = getWrappedLatLng(predPoint);
+  
   if (avatarMarker) {
     if (!visualAvatarLatLng) {
-      visualAvatarLatLng = L.latLng(wrappedTargetLatLng.lat, wrappedTargetLatLng.lng);
+      visualAvatarLatLng = L.latLng(wrappedPredPoint.lat, wrappedPredPoint.lng);
     } else {
-      // Lerp visual position to wrappedTargetLatLng with a half-life of 0.3s
-      const factor = 1 - Math.exp(-dt / 0.3);
-      const newLat = visualAvatarLatLng.lat + (wrappedTargetLatLng.lat - visualAvatarLatLng.lat) * factor;
-      const newLng = visualAvatarLatLng.lng + (wrappedTargetLatLng.lng - visualAvatarLatLng.lng) * factor;
-      visualAvatarLatLng = L.latLng(newLat, newLng);
+      const distKm = getDistanceKM(visualAvatarLatLng, wrappedPredPoint);
+      
+      let speedKmh = lastPoint.velocity;
+      if (speedKmh <= 0) {
+        speedKmh = 5.0;
+      }
+      
+      const speedBoost = distKm * 120.0;
+      speedKmh += speedBoost;
+      
+      const speedKmPerMs = speedKmh / 3600000;
+      const stepKm = speedKmPerMs * frameDtMs;
+      
+      if (distKm > 0) {
+        if (distKm > 3.0) {
+          visualAvatarLatLng = L.latLng(wrappedPredPoint.lat, wrappedPredPoint.lng);
+        } else if (stepKm >= distKm) {
+          visualAvatarLatLng = L.latLng(wrappedPredPoint.lat, wrappedPredPoint.lng);
+        } else {
+          const fraction = stepKm / distKm;
+          const newLat = visualAvatarLatLng.lat + (wrappedPredPoint.lat - visualAvatarLatLng.lat) * fraction;
+          const newLng = visualAvatarLatLng.lng + (wrappedPredPoint.lng - visualAvatarLatLng.lng) * fraction;
+          visualAvatarLatLng = L.latLng(newLat, newLng);
+        }
+      }
     }
     avatarMarker.setLatLng(visualAvatarLatLng);
     
-    // 4. Update follow camera
+    // 3. Camera dead-zone follow logic
     if (isFollowingDino && !isZooming) {
-      map.setView(visualAvatarLatLng, map.getZoom(), { animate: false });
+      const charPoint = map.latLngToContainerPoint(visualAvatarLatLng);
+      const centerPoint = L.point(map.getSize().x / 2, map.getSize().y / 2);
+      const dx = charPoint.x - centerPoint.x;
+      const dy = charPoint.y - centerPoint.y;
+      const pixelDist = Math.sqrt(dx * dx + dy * dy);
+      
+      const bufferRadius = 60;
+      
+      if (pixelDist > bufferRadius) {
+        const shiftX = dx * (1 - bufferRadius / pixelDist);
+        const shiftY = dy * (1 - bufferRadius / pixelDist);
+        const targetCenterLatLng = map.containerPointToLatLng(centerPoint.add([shiftX, shiftY]));
+        
+        const currentCenter = map.getCenter();
+        const dt = frameDtMs / 1000;
+        const camFactor = 1 - Math.exp(-dt / 0.8);
+        const nextLat = currentCenter.lat + (targetCenterLatLng.lat - currentCenter.lat) * camFactor;
+        const nextLng = currentCenter.lng + (targetCenterLatLng.lng - currentCenter.lng) * camFactor;
+        
+        map.setView(L.latLng(nextLat, nextLng), map.getZoom(), { animate: false });
+      }
     }
   }
+  
+  // Wrap positions if map wrapping boundary is crossed
+  updateMapPositionWrapping();
+  
+  requestAnimationFrame(animateAvatar);
 }
+
+let extrapolationPolyline = null;
 
 function updateFollowButtonUI() {
   const followBtn = document.getElementById('follow-toggle');
@@ -2633,4 +1445,3 @@ function updateFollowButtonUI() {
     }
   }
 }
-

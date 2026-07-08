@@ -9,11 +9,13 @@ type Config struct {
 	GarminPollIntervalMinutes int     `json:"garmin_poll_interval_minutes"`
 	UseTestServer             bool    `json:"use_test_server"`
 	PollIntervalSeconds       int     `json:"poll_interval_seconds"`
+	EnableDevPanel            bool    `json:"enable_dev_panel"`
 	OpenMeteoURL              string  `json:"open_meteo_url"`
 	DataFilePath              string  `json:"data_file_path"`
 	GoalLatitude              float64 `json:"goal_latitude"`
 	GoalLongitude             float64 `json:"goal_longitude"`
 	GoalTitle                 string  `json:"goal_title"`
+	DepartureTimeStr          string  `json:"departure_time"`
 }
 
 type Coordinate struct {
@@ -31,15 +33,18 @@ type GarminPoint struct {
 }
 
 type DashboardPayload struct {
-	CurrentState  string       `json:"currentState"`
-	History       []Coordinate `json:"history"`
-	Weather       string       `json:"weather"`
-	BatteryLevel  int          `json:"batteryLevel"`
-	HighScore     int          `json:"highScore"`
-	StatusText    string       `json:"statusText"`
-	GoalLatitude  float64      `json:"goalLatitude"`
-	GoalLongitude float64      `json:"goalLongitude"`
-	GoalTitle     string       `json:"goalTitle"`
+	CurrentState       string       `json:"currentState"`
+	History            []Coordinate `json:"history"`
+	Weather            string       `json:"weather"`
+	BatteryLevel       int          `json:"batteryLevel"`
+	HighScore          int          `json:"highScore"`
+	StatusText         string       `json:"statusText"`
+	GoalLatitude       float64      `json:"goalLatitude"`
+	GoalLongitude      float64      `json:"goalLongitude"`
+	GoalTitle          string       `json:"goalTitle"`
+	EnableDevPanel     bool         `json:"enableDevPanel"`
+	ExtrapolatedTarget *Coordinate  `json:"extrapolatedTarget"`
+	DepartureTime      string       `json:"departureTime"`
 }
 
 type Store struct {
