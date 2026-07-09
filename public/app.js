@@ -45,6 +45,8 @@ let trackPolyline = null;
 let trackDots = [];
 let avatarMarker = null;
 let goalMarker = null;
+let shelterMarker = null;
+let winnipegMarker = null;
 let isZooming = false;
 let pendingUpdateMap = false;
 
@@ -240,6 +242,7 @@ function initMap() {
       updateMap();
     }
   });
+  map.on('move', updateMapPositionWrapping);
 
   // Goal waterfall marker at Manitoba Kapakaytay Falls
   const goalLatLng = L.latLng(56.0653, -98.2004);
@@ -287,7 +290,7 @@ function initMap() {
     iconAnchor: [16, 28]
   });
   
-  const shelterMarker = L.marker(thompson, { icon: shelterIcon }).addTo(map);
+  shelterMarker = L.marker(thompson, { icon: shelterIcon }).addTo(map);
   shelterMarker.bindPopup(`
     <div style="font-family: var(--font-retro); font-size: 8px; color: #fff; background: #222; padding: 4px; border: 1.5px solid var(--neon-orange); border-radius: 4px;">
       <div style="color: var(--neon-orange); font-weight: bold; margin-bottom: 2px;">STATION: THOMPSON</div>
@@ -307,7 +310,7 @@ function initMap() {
     iconAnchor: [16, 28]
   });
 
-  const winnipegMarker = L.marker(winnipeg, { icon: winnipegIcon }).addTo(map);
+  winnipegMarker = L.marker(winnipeg, { icon: winnipegIcon }).addTo(map);
   winnipegMarker.bindPopup(`
     <div style="font-family: var(--font-retro); font-size: 8px; color: #fff; background: #222; padding: 4px; border: 1.5px solid var(--neon-green); border-radius: 4px;">
       <div style="color: var(--neon-green); font-weight: bold; margin-bottom: 2px;">START: WINNIPEG</div>
@@ -830,12 +833,27 @@ function updateMapPositionWrapping() {
   if (goalMarker) {
     goalMarker.setLatLng(getWrappedLatLng(goalMarker.getLatLng()));
   }
+  if (shelterMarker) {
+    shelterMarker.setLatLng(getWrappedLatLng(shelterMarker.getLatLng()));
+  }
+  if (winnipegMarker) {
+    winnipegMarker.setLatLng(getWrappedLatLng(winnipegMarker.getLatLng()));
+  }
   if (trackPolyline) {
     trackPolyline.setLatLngs(getWrappedLatLngs(trackPolyline.getLatLngs()));
   }
   if (trackDots && trackDots.length > 0) {
     trackDots.forEach(dot => {
       dot.setLatLng(getWrappedLatLng(dot.getLatLng()));
+    });
+  }
+  if (routeGeoJsonLayer) {
+    routeGeoJsonLayer.eachLayer(layer => {
+      if (typeof layer.setLatLngs === 'function') {
+        layer.setLatLngs(getWrappedLatLngs(layer.getLatLngs()));
+      } else if (typeof layer.setLatLng === 'function') {
+        layer.setLatLng(getWrappedLatLng(layer.getLatLng()));
+      }
     });
   }
 }
@@ -1023,7 +1041,15 @@ function getGoalFlagSVG() {
 function getCanoeSVG() {
   return `
     <svg width="64" height="48" viewBox="0 0 64 48" xmlns="http://www.w3.org/2000/svg" style="image-rendering: pixelated; width: 100%; height: 100%;">
+      <!-- Dinosaur in the back with a Scholar Cap (Mortarboard) -->
       <g transform="translate(6, 4)">
+        <!-- Scholar Cap -->
+        <rect x="6" y="-3" width="8" height="2" fill="#111111"/>
+        <rect x="2" y="-5" width="15" height="2" fill="#111111"/>
+        <rect x="3" y="-3" width="1" height="4" fill="#ffcc00"/>
+        <rect x="2" y="1" width="2" height="2" fill="#ffcc00"/>
+        
+        <!-- Dino Body -->
         <rect x="6" y="0" width="8" height="6" fill="#39ff14"/>
         <rect x="12" y="2" width="2" height="2" fill="#000"/>
         <rect x="2" y="6" width="10" height="12" fill="#39ff14"/>
@@ -1032,7 +1058,16 @@ function getCanoeSVG() {
         <rect x="0" y="10" width="2" height="6" fill="#39ff14"/>
         <rect x="10" y="12" width="4" height="2" fill="#39ff14"/>
       </g>
+      
+      <!-- Dinosaur in the front with a Cowboy Hat -->
       <g transform="translate(38, 6)">
+        <!-- Cowboy Hat -->
+        <rect x="2" y="-2" width="15" height="2" fill="#a0522d"/>
+        <rect x="5" y="-5" width="10" height="3" fill="#a0522d"/>
+        <rect x="7" y="-6" width="6" height="1" fill="#5c2c16"/>
+        <rect x="5" y="-2" width="10" height="1" fill="#ff0055"/>
+        
+        <!-- Dino Body -->
         <rect x="6" y="0" width="8" height="6" fill="#2ad10d"/>
         <rect x="12" y="2" width="2" height="2" fill="#000"/>
         <rect x="2" y="6" width="10" height="12" fill="#2ad10d"/>

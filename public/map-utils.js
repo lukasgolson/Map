@@ -13,11 +13,16 @@ export function getWrappedLatLng(map, latlng) {
 }
 
 export function getWrappedLatLngs(map, latlngs) {
-  if (latlngs.length === 0) return [];
+  if (!latlngs || latlngs.length === 0) return [];
   if (!map || !map._loaded) return latlngs;
   try {
+    // If it's a nested array (e.g. MultiPolyline)
+    if (Array.isArray(latlngs[0])) {
+      return latlngs.map(sub => getWrappedLatLngs(map, sub));
+    }
     const centerLng = map.getCenter().lng;
     const latest = latlngs[latlngs.length - 1];
+    if (!latest || typeof latest.lng !== 'number') return latlngs;
     const diff = centerLng - latest.lng;
     const wraps = Math.round(diff / 360.0);
     const shift = wraps * 360.0;
