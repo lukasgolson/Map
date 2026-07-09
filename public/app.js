@@ -10,14 +10,15 @@ import {
   isMusicPlaying,
   isSFXEnabled,
   initAudioContext,
-  playStartupChime,
+  startMusicOnSplash,
   toggleMusic,
   toggleSFX,
   stopAllSynths,
   updateAudioVibe,
   playSFX,
   modulateMusicByWeather,
-  setAudioState
+  setAudioState,
+  musicMode
 } from './audio.js';
 
 import {
@@ -93,12 +94,17 @@ document.addEventListener('DOMContentLoaded', () => {
     if (map) map.invalidateSize();
   });
   
-  // Set default button UI state to ON since it is enabled by default
+  // Set default button UI state based on detected OS/musicMode
   const btn = document.getElementById('music-toggle');
   if (btn) {
-    btn.className = 'neon-btn play';
     const label = document.getElementById('music-label');
-    if (label) label.textContent = 'MUSIC: ON';
+    if (musicMode === 'off') {
+      btn.className = 'neon-btn mute';
+      if (label) label.textContent = 'MUSIC: OFF';
+    } else {
+      btn.className = 'neon-btn play';
+      if (label) label.textContent = `MUSIC: ${musicMode.toUpperCase()}`;
+    }
   }
 
   // Initialize follow button state
@@ -132,6 +138,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const sfxBtn = document.getElementById('sfx-toggle');
   if (sfxBtn) sfxBtn.addEventListener('click', toggleSFX);
 
+  // Real-time ticking clock for departure timer
+  setInterval(updateDepartureTimer, 1000);
+
   // Dev panel open/close toggle
   const devToggleBtn = document.getElementById('dev-toggle');
   const devPanel = document.getElementById('dev-panel');
@@ -154,6 +163,7 @@ document.addEventListener('DOMContentLoaded', () => {
     devToggleBtn.addEventListener('click', () => {
       devPanel.classList.toggle('hidden');
       devToggleBtn.classList.toggle('play'); // glowing toggle effect
+      updateMap(); // Redraw map instantly to show/hide points based on new dev mode state
     });
   }
   
@@ -163,8 +173,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // One-time global interaction listener to unlock Web Audio context and fade out splash screen
   const splash = document.getElementById('splash-screen');
   const startAudioOnSplash = () => {
-    initAudioContext();
-    playStartupChime();
+    startMusicOnSplash();
     
     // Fade out and remove splash screen
     if (splash) {
@@ -172,10 +181,6 @@ document.addEventListener('DOMContentLoaded', () => {
       setTimeout(() => {
         splash.remove();
       }, 800);
-    }
-    
-    if (isMusicPlaying) {
-      updateAudioVibe(currentData.currentState);
     }
     
     // Clean up event listeners
@@ -236,33 +241,38 @@ function initMap() {
     }
   });
 
-  // Goal waterfall marker in Vancouver
-  const waterfall = L.latLng(49.2568, -123.1238);
+  // Goal waterfall marker at Manitoba Kapakaytay Falls
+  const goalLatLng = L.latLng(56.0653, -98.2004);
   
-  const flagIcon = L.divIcon({
-    html: getGoalFlagSVG(),
-    className: 'goal-marker-flag',
-    iconSize: [48, 48],
-    iconAnchor: [12, 42]
+  const waterfallIcon = L.divIcon({
+    html: `
+      <svg width="32" height="32" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" style="image-rendering: pixelated; width: 100%; height: 100%;">
+        <!-- Cliff/rocks -->
+        <rect x="2" y="16" width="10" height="12" fill="#555" stroke="#333" stroke-width="1.5"/>
+        <rect x="20" y="16" width="10" height="12" fill="#555" stroke="#333" stroke-width="1.5"/>
+        <!-- Water stream -->
+        <rect x="12" y="8" width="8" height="20" fill="#00f3ff"/>
+        <!-- Foam/splash -->
+        <rect x="10" y="24" width="12" height="4" fill="#fff"/>
+      </svg>
+    `,
+    className: 'waterfall-marker-icon',
+    iconSize: [32, 32],
+    iconAnchor: [16, 28]
   });
   
-  goalMarker = L.marker(waterfall, { icon: flagIcon }).addTo(map);
+  goalMarker = L.marker(goalLatLng, { icon: waterfallIcon }).addTo(map);
   
-  // Custom popup
   goalMarker.bindPopup(`
-    <div style="font-family: var(--font-retro); font-size: 9px; color: #fff; background: #222; padding: 6px; border: 2px solid var(--neon-cyan); border-radius: 4px; box-shadow: 0 0 10px var(--neon-cyan);">
-      <div style="color: var(--neon-cyan); font-weight: bold; margin-bottom: 4px;">GOAL REACHED</div>
-      Dino waterfall sanctuary! Safe and sound.
+    <div style="font-family: var(--font-retro); font-size: 8px; color: #fff; background: #222; padding: 4px; border: 1.5px solid var(--neon-cyan); border-radius: 4px;">
+      <div style="color: var(--neon-cyan); font-weight: bold; margin-bottom: 2px;">GOAL: KAPAKAYTAY FALLS</div>
+      Final expedition destination.
     </div>
-  `, {
-    closeButton: false,
-    offset: L.point(0, -32)
-  });
+  `, { closeButton: false, offset: L.point(0, -22) });
 
   // Thompson and Winnipeg real Manitoba markers
   const winnipeg = L.latLng(49.8951, -97.1384);
   const thompson = L.latLng(55.7433, -97.8553);
-  const goalLatLng = L.latLng(56.0653, -98.2004);
   
   const shelterIcon = L.divIcon({
     html: `
@@ -302,31 +312,6 @@ function initMap() {
     <div style="font-family: var(--font-retro); font-size: 8px; color: #fff; background: #222; padding: 4px; border: 1.5px solid var(--neon-green); border-radius: 4px;">
       <div style="color: var(--neon-green); font-weight: bold; margin-bottom: 2px;">START: WINNIPEG</div>
       Expedition departure point.
-    </div>
-  `, { closeButton: false, offset: L.point(0, -22) });
-
-  const waterfallIcon = L.divIcon({
-    html: `
-      <svg width="32" height="32" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" style="image-rendering: pixelated; width: 100%; height: 100%;">
-        <!-- Cliff/rocks -->
-        <rect x="2" y="16" width="10" height="12" fill="#555" stroke="#333" stroke-width="1.5"/>
-        <rect x="20" y="16" width="10" height="12" fill="#555" stroke="#333" stroke-width="1.5"/>
-        <!-- Water stream -->
-        <rect x="12" y="8" width="8" height="20" fill="#00f3ff"/>
-        <!-- Foam/splash -->
-        <rect x="10" y="24" width="12" height="4" fill="#fff"/>
-      </svg>
-    `,
-    className: 'waterfall-marker-icon',
-    iconSize: [32, 32],
-    iconAnchor: [16, 28]
-  });
-  
-  const waterfallMarker = L.marker(goalLatLng, { icon: waterfallIcon }).addTo(map);
-  waterfallMarker.bindPopup(`
-    <div style="font-family: var(--font-retro); font-size: 8px; color: #fff; background: #222; padding: 4px; border: 1.5px solid var(--neon-cyan); border-radius: 4px;">
-      <div style="color: var(--neon-cyan); font-weight: bold; margin-bottom: 2px;">GOAL: KAPAKAYTAY FALLS</div>
-      Final expedition destination.
     </div>
   `, { closeButton: false, offset: L.point(0, -22) });
 
@@ -569,17 +554,12 @@ function fetchData() {
 
 function updateUI() {
   updateTheme();
+  updateDepartureTimer();
 
   // Update trip header title
   const tripTitleEl = document.getElementById('trip-title');
   if (tripTitleEl) {
     tripTitleEl.textContent = currentData.goalTitle || 'Martin & Olson; Kapakaytay Falls, MB, Canada';
-  }
-
-  // Update splash title dynamically
-  const splashTitleEl = document.getElementById('splash-title');
-  if (splashTitleEl && currentData.goalTitle) {
-    splashTitleEl.textContent = currentData.goalTitle.toUpperCase();
   }
 
   // Calculate Expedition Progress (Non-linear progress)
@@ -873,6 +853,27 @@ function updateMap() {
   }
 
   if (currentData.history.length === 0) return;
+
+  // Don't display points before departure time unless in dev mode
+  const isBeforeDeparture = currentData.departureTime && (Date.now() < new Date(currentData.departureTime).getTime());
+  const devPanel = document.getElementById('dev-panel');
+  const isDevPanelOpen = devPanel && !devPanel.classList.contains('hidden');
+  const hasOverrides = devStateOverride !== 'auto' || devTimeOverride !== 'auto' || devWeatherOverride !== 'auto';
+  const isDevMode = isDevPanelOpen || hasOverrides;
+
+  if (isBeforeDeparture && !isDevMode) {
+    if (trackPolyline) {
+      map.removeLayer(trackPolyline);
+      trackPolyline = null;
+    }
+    trackDots.forEach(dot => map.removeLayer(dot));
+    trackDots = [];
+    if (avatarMarker) {
+      map.removeLayer(avatarMarker);
+      avatarMarker = null;
+    }
+    return;
+  }
   
   const snappedLatLngs = snapToTransitAngles(currentData.history);
   const wrappedLatLngs = getWrappedLatLngs(snappedLatLngs);
@@ -1444,4 +1445,43 @@ function updateFollowButtonUI() {
       label.textContent = 'FOLLOW: OFF';
     }
   }
+}
+
+function updateDepartureTimer() {
+  const timerLabel = document.getElementById('timer-label');
+  const timerVal = document.getElementById('timer-val');
+  if (!timerLabel || !timerVal || !currentData || !currentData.departureTime) return;
+
+  const departureDate = new Date(currentData.departureTime);
+  const now = new Date();
+  const diffMs = departureDate.getTime() - now.getTime();
+
+  if (diffMs > 0) {
+    timerLabel.textContent = 'DEPARTURE IN';
+    timerVal.textContent = formatTimeDiff(diffMs);
+    timerVal.classList.remove('elapsed');
+    timerVal.classList.add('countdown');
+  } else {
+    timerLabel.textContent = 'ELAPSED TIME';
+    timerVal.textContent = formatTimeDiff(Math.abs(diffMs));
+    timerVal.classList.remove('countdown');
+    timerVal.classList.add('elapsed');
+  }
+}
+
+function formatTimeDiff(ms) {
+  const totalSecs = Math.floor(ms / 1000);
+  const secs = totalSecs % 60;
+  const totalMins = Math.floor(totalSecs / 60);
+  const mins = totalMins % 60;
+  const totalHours = Math.floor(totalMins / 60);
+  const hours = totalHours % 24;
+  const days = Math.floor(totalHours / 24);
+
+  const d = String(days).padStart(2, '0');
+  const h = String(hours).padStart(2, '0');
+  const m = String(mins).padStart(2, '0');
+  const s = String(secs).padStart(2, '0');
+
+  return `${d}d ${h}h ${m}m ${s}s`;
 }

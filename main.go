@@ -314,7 +314,7 @@ func handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		state = "disconnected"
-		statusText = "Offline. Expedition departure scheduled."
+		statusText = "Packing his bags, and checking it twice"
 		battery = 100
 	}
 

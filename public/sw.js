@@ -1,4 +1,4 @@
-const CACHE_NAME = 'dino-map-cache-v17';
+const CACHE_NAME = 'dino-map-cache-v25';
 const ASSETS = [
   '/',
   '/index.html',

@@ -1,8 +1,12 @@
-export let isMusicPlaying = true; // Enabled by default!
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+export let isMusicPlaying = false;
 export let isSFXEnabled = true;
 export let audioCtx = null;
 export let masterFilter = null;
 export let currentVibe = null; // 'paddling', 'camping', 'resting', 'disconnected'
+export let musicMode = isIOS ? 'off' : 'waai'; // Default to OFF on iOS to save cellular data, WAAI on other platforms
+let radioAudio = null;
 export let currentWeather = null;
 export let currentTimeOfDay = null;
 
@@ -90,29 +94,92 @@ export async function playStartupChime() {
   }
 }
 
+function playRadioStream(mode) {
+  if (!radioAudio) {
+    radioAudio = new Audio();
+    radioAudio.crossOrigin = 'anonymous';
+  }
+  if (mode === 'waai') {
+    radioAudio.src = 'https://ais-sa1.streamon.fm/11200_96k.aac';
+  } else if (mode === 'jazz') {
+    radioAudio.src = 'https://streams.fluxfm.de/jazzschwarz/mp3-128/';
+  } else if (mode === 'folk') {
+    radioAudio.src = 'https://freshgrass.streamguys1.com/ss1-128mp3';
+  }
+  radioAudio.volume = 0.5;
+  radioAudio.play().catch(err => {
+    console.error(`Failed to play ${mode} stream:`, err);
+  });
+}
+
+function stopRadioStream() {
+  if (radioAudio) {
+    radioAudio.pause();
+    radioAudio.src = '';
+  }
+}
+
+export async function startMusicOnSplash() {
+  await initAudioContext();
+  playStartupChime();
+  if (musicMode === 'waai') {
+    playRadioStream('waai');
+  } else if (musicMode === 'jazz') {
+    playRadioStream('jazz');
+  } else if (musicMode === 'folk') {
+    playRadioStream('folk');
+  } else if (musicMode === 'chiptune') {
+    isMusicPlaying = true;
+    updateAudioVibe(currentData ? currentData.currentState : 'disconnected');
+  }
+}
+
 export async function toggleMusic() {
   const btn = document.getElementById('music-toggle');
+  const label = document.getElementById('music-label');
   await initAudioContext();
   
-  // If music is enabled by default but hasn't started yet, play it!
-  if (isMusicPlaying && !currentVibe) {
-    updateAudioVibe(currentData ? currentData.currentState : 'disconnected');
-    return;
-  }
-  
-  if (!isMusicPlaying) {
+  if (musicMode === 'waai') {
+    // Cycle: WAAI -> CHIPTUNE
+    musicMode = 'chiptune';
     isMusicPlaying = true;
+    stopRadioStream();
     if (btn) btn.className = 'neon-btn play';
-    const label = document.getElementById('music-label');
-    if (label) label.textContent = 'MUSIC: ON';
+    if (label) label.textContent = 'MUSIC: CHIPTUNE';
     currentVibe = null; // force initialization
     updateAudioVibe(currentData ? currentData.currentState : 'disconnected');
-  } else {
+  } else if (musicMode === 'chiptune') {
+    // Cycle: CHIPTUNE -> JAZZ
+    musicMode = 'jazz';
     isMusicPlaying = false;
-    if (btn) btn.className = 'neon-btn mute';
-    const label = document.getElementById('music-label');
-    if (label) label.textContent = 'MUSIC: OFF';
     stopAllSynths();
+    playRadioStream('jazz');
+    if (btn) btn.className = 'neon-btn play';
+    if (label) label.textContent = 'MUSIC: JAZZ';
+  } else if (musicMode === 'jazz') {
+    // Cycle: JAZZ -> FOLK
+    musicMode = 'folk';
+    isMusicPlaying = false;
+    stopAllSynths();
+    playRadioStream('folk');
+    if (btn) btn.className = 'neon-btn play';
+    if (label) label.textContent = 'MUSIC: FOLK';
+  } else if (musicMode === 'folk') {
+    // Cycle: FOLK -> OFF
+    musicMode = 'off';
+    isMusicPlaying = false;
+    stopAllSynths();
+    stopRadioStream();
+    if (btn) btn.className = 'neon-btn mute';
+    if (label) label.textContent = 'MUSIC: OFF';
+  } else {
+    // Cycle: OFF -> WAAI
+    musicMode = 'waai';
+    isMusicPlaying = false;
+    stopAllSynths();
+    playRadioStream('waai');
+    if (btn) btn.className = 'neon-btn play';
+    if (label) label.textContent = 'MUSIC: WAAI';
   }
 }
 
