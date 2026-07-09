@@ -297,6 +297,11 @@ body.light-theme .crt-glow {
   transform: scale(1.05);
 }
 
+.neon-btn:focus-visible {
+  outline: 2px solid var(--neon-cyan);
+  outline-offset: 2px;
+}
+
 /* Telemetry Panel (Z: 5) */
 #telemetry-panel {
   position: absolute;
@@ -731,6 +736,11 @@ body.light-theme #cloudy-overlay {
     transform: scale(0.97);
     box-shadow: 0 0 4px var(--neon-pink, #ff0055);
   }
+}
+
+.splash-btn-pulse:focus-visible {
+  outline: 3px solid var(--neon-cyan);
+  outline-offset: 4px;
 }
 
 .splash-screen.fade-out {

@@ -1,0 +1,3 @@
+## 2026-07-09 - [Splash Screen Keyboard Trap Prevention]
+**Learning:** Splash screens or "Press to start" overlays must use semantic interactive elements (like `<button>`) instead of simple `<div>`s to avoid trapping keyboard users before the app even loads.
+**Action:** Always verify that full-page interactive overlays provide clear `:focus-visible` styling and natively handle Enter/Space inputs for semantic elements.
