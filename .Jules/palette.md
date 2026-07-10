@@ -1,0 +1,3 @@
+## 2024-05-24 - Focus Outline Overrides in Retro Theming
+**Learning:** The application's retro styling pattern deliberately removes native focus outlines (`outline: none;`) on interactive elements without providing custom keyboard focus indicators. This makes the interface inaccessible to keyboard users, as there's no visual feedback for the currently focused element.
+**Action:** When working on applications with heavily customized theming (like this retro aesthetic), always ensure custom `:focus-visible` states are explicitly defined using the app's established design tokens (e.g., `var(--neon-cyan)`) to maintain both accessibility and the intended visual style.

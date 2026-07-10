@@ -54,6 +54,13 @@ body.dark-theme {
   -webkit-tap-highlight-color: transparent;
 }
 
+button:focus-visible,
+select:focus-visible,
+.splash-screen:focus-visible {
+  outline: 2px solid var(--neon-cyan);
+  outline-offset: 2px;
+}
+
 body, html {
   width: 100%;
   height: 100%;
