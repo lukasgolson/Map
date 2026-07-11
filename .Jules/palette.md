@@ -1,0 +1,3 @@
+## 2025-02-28 - [Keyboard Focus in Custom UI]
+**Learning:** When using `outline: none;` to remove default browser focus rings (especially for retro or neon-styled interfaces), keyboard accessibility is completely broken. Standard users using a mouse won't notice, but keyboard users lose their place on the page.
+**Action:** Always pair `outline: none;` with an overriding `:focus-visible` pseudo-class that supplies a visually congruent focus ring (e.g., matching the neon theme of the app). Using `:focus-visible` ensures mouse users don't see ugly rings when clicking, while keyboard users are accommodated.
