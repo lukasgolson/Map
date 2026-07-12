@@ -614,6 +614,7 @@ function updateUI() {
   const progressBarEl = document.getElementById('progress-bar');
   if (progressBarEl) {
     progressBarEl.style.width = progressPercent + '%';
+    progressBarEl.setAttribute('aria-valuenow', Math.round(progressPercent));
   }
 
   const stateVal = document.getElementById('telemetry-state');
@@ -812,6 +813,7 @@ function updateBatteryUI(level) {
   const bar = document.getElementById('battery-bar');
   if (bar) {
     bar.style.width = level + '%';
+    bar.setAttribute('aria-valuenow', level);
     if (level <= 20) {
       bar.style.backgroundColor = 'var(--neon-pink)';
       bar.style.boxShadow = '0 0 8px var(--neon-pink)';
