@@ -1,0 +1,3 @@
+## 2024-06-25 - Missing Focus Indicators on Retro UI
+**Learning:** Retro, custom-styled UI elements (like `.neon-btn`) often completely suppress default browser focus outlines without providing an alternative. This creates a severe accessibility barrier for keyboard navigation, as users cannot see which element has focus.
+**Action:** When designing custom retro interfaces with stylized buttons and controls, explicitly add `:focus-visible` styles using the design system's thematic colors (e.g., `var(--neon-cyan)`) to ensure the focus state is both clearly visible and integrated with the overall aesthetic.
