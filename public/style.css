@@ -254,6 +254,11 @@ body.light-theme .crt-glow {
   touch-action: manipulation;
 }
 
+#music-toggle:focus-visible, #follow-toggle:focus-visible, #sfx-toggle:focus-visible, .dev-toggle:focus-visible {
+  outline: 2px solid var(--neon-cyan) !important;
+  outline-offset: 2px;
+}
+
 #music-toggle {
   width: 145px;
 }
@@ -425,6 +430,11 @@ body.light-theme .telemetry-label {
   padding: 4px;
   outline: none;
   cursor: pointer;
+}
+
+.dev-row select:focus-visible {
+  outline: 2px solid var(--neon-cyan) !important;
+  outline-offset: 2px;
 }
 
 /* Bottom HUD / Ticker Tape Status Panel (Z: 5) */

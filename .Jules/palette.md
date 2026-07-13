@@ -1,0 +1,3 @@
+## 2026-07-13 - Custom Progress Bar ARIA Roles and Focus Visible States
+**Learning:** When implementing custom progress bars or meters in the frontend UI, explicitly setting ARIA properties (`role="progressbar"`, `aria-label`) in HTML and dynamically updating `aria-valuenow` via JavaScript is critical to maintain screen reader accessibility. Additionally, using the `:focus-visible` pseudo-class instead of `:focus` for interactive elements ensures clear keyboard accessibility indicators without displaying persistent outlines for mouse users.
+**Action:** Always add ARIA roles/labels and dynamic value updates for custom UI meters, and prefer `:focus-visible` over `:focus` when overriding `outline: none`.
