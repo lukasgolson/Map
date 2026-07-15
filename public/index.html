@@ -104,7 +104,7 @@
       </div>
       <div class="telemetry-row status-msg-row">
         <span class="telemetry-label">STATUS</span>
-        <span id="telemetry-status" class="telemetry-value">Connecting to Dino Tracker...</span>
+        <span id="telemetry-status" class="telemetry-value" aria-live="polite" aria-atomic="true">Connecting to Dino Tracker...</span>
       </div>
     </div>
 
@@ -112,19 +112,19 @@
     <div id="controls-row">
       <!-- Follow Dino Button -->
       <button id="follow-toggle" class="neon-btn play" aria-label="Toggle Follow Dino">
-        <span class="follow-icon">🦖</span>
+        <span class="follow-icon" aria-hidden="true">🦖</span>
         <span id="follow-label">FOLLOW: ON</span>
       </button>
 
       <!-- SFX Toggle Button -->
       <button id="sfx-toggle" class="neon-btn play" aria-label="Toggle SFX">
-        <span class="sfx-icon">🔊</span>
+        <span class="sfx-icon" aria-hidden="true">🔊</span>
         <span id="sfx-label">SFX: ON</span>
       </button>
 
       <!-- Right-aligned Music Toggle Button -->
       <button id="music-toggle" class="neon-btn mute" aria-label="Toggle Music">
-        <span class="music-icon">🎵</span>
+        <span class="music-icon" aria-hidden="true">🎵</span>
         <span id="music-label">MUSIC: OFF</span>
       </button>
 
