@@ -1,3 +1,7 @@
 ## 2023-10-27 - Custom Progress Bars Accessibility
 **Learning:** Found that custom visual progress and battery bars built with `<div>` elements were completely opaque to screen readers. We must explicitly set `role="progressbar"`, `aria-label`, `aria-valuemin`, `aria-valuemax` in the HTML, and dynamically update `aria-valuenow` via JavaScript (`app.js`) to maintain screen reader accessibility. Also, using `:focus-visible` ensures clear keyboard accessibility indicators without displaying persistent outlines for mouse users.
 **Action:** Always add ARIA properties and `aria-valuenow` logic to custom data visualization/progress bars. Use `:focus-visible` with a theme-appropriate color (`var(--neon-cyan)`) for interactive elements.
+
+## 2024-05-18 - ARIA Live Regions and Decorative Elements
+**Learning:** Found that dynamically updated text elements like the status message (`#telemetry-status`) were not being announced by screen readers when updated. Also found that buttons containing both a textual label and an emoji were causing redundant and confusing announcements for screen reader users.
+**Action:** Use `aria-live="polite"` and `aria-atomic="true"` on containers of dynamic text elements to ensure screen readers announce the updates. Add `aria-hidden="true"` to purely decorative elements like emojis when they are alongside textual labels inside buttons with `aria-label` attributes.
