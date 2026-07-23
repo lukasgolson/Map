@@ -1,3 +1,7 @@
 ## 2023-10-27 - Custom Progress Bars Accessibility
 **Learning:** Found that custom visual progress and battery bars built with `<div>` elements were completely opaque to screen readers. We must explicitly set `role="progressbar"`, `aria-label`, `aria-valuemin`, `aria-valuemax` in the HTML, and dynamically update `aria-valuenow` via JavaScript (`app.js`) to maintain screen reader accessibility. Also, using `:focus-visible` ensures clear keyboard accessibility indicators without displaying persistent outlines for mouse users.
 **Action:** Always add ARIA properties and `aria-valuenow` logic to custom data visualization/progress bars. Use `:focus-visible` with a theme-appropriate color (`var(--neon-cyan)`) for interactive elements.
+
+## 2026-07-23 - Dynamic UI Elements and Redundant Icons
+**Learning:** Discovered that dynamically updated text elements (like the status message) need `aria-live="polite"` and `aria-atomic="true"` so screen readers can announce changes as they happen. Also, buttons that contain both descriptive text/aria-labels and decorative emoji icons can cause redundant or confusing audio output for screen readers unless the decorative icon wrapper is marked with `aria-hidden="true"`.
+**Action:** Always add `aria-live` to dynamically updating text fields, and hide decorative elements (like emojis inside buttons) from screen readers using `aria-hidden="true"` when the context is already provided via text or aria-labels.
