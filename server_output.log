@@ -1,0 +1,13 @@
+Departure time set to: 2026-07-13T22:00:00-05:00
+[SIM] Occasional random drift triggered at step 1
+[SIM] Occasional random drift triggered at step 3
+[SIM] Occasional random drift triggered at step 21
+Generated ant-crawl test route: Start(55.9800, -98.1200) -> End(56.0653, -98.2004) over 30 steps
+Starting Olson's Adventure Map server on port 8080...
+[2026-07-23T21:16:44Z] Polling Garmin KML feed...
+Test KML served. Advanced test step to 1/29
+No new points found in this poll.
+[2026-07-23T21:17:13Z] Polling Garmin KML feed...
+Test KML served. Advanced test step to 2/29
+Data store updated with new points. Total coordinates: 3
+signal: terminated
